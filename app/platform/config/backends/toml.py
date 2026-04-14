@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-import tomllib
 
+from app.core.compat import tomllib
 from .base import ConfigBackend
 from ..loader import _deep_merge as deep_merge
 

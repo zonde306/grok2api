@@ -2,7 +2,8 @@
 
 from functools import lru_cache
 from pathlib import Path
-import tomllib
+
+from app.core.compat import tomllib
 
 
 _ROOT = Path(__file__).resolve().parents[2]

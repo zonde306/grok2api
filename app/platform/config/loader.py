@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import tomllib
+from app.core.compat import tomllib
 
 
 def _flatten(mapping: dict[str, Any], prefix: str = "") -> dict[str, Any]:
