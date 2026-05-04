@@ -150,10 +150,14 @@ button{cursor:pointer}
 .webui-chatkit-shell{width:min(100%,1120px);margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr);gap:18px;min-height:calc(100vh - 106px)}
 .webui-chatkit-stage{display:grid;gap:18px;align-content:center}
 .webui-chatkit-toolbar{
-  width:min(100%,240px);margin:0 auto;min-width:0
+  width:min(100%,520px);margin:0 auto;min-width:0
 }
 .webui-chatkit-toolbar-controls{
-  display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:10px;min-width:0
+  display:grid;grid-template-columns:repeat(4,1fr);align-items:start;gap:10px;min-width:0
+}
+@media (max-width: 600px){
+  .webui-chatkit-toolbar{width:min(100%,100%)}
+  .webui-chatkit-toolbar-controls{grid-template-columns:repeat(2,1fr)}
 }
 .webui-chatkit-pill{
   width:100%;min-width:0;padding:0;border-radius:0;display:grid;
@@ -557,6 +561,11 @@ button{cursor:pointer}
 .msg-card-assistant video{
   display:block;width:min(100%,400px);max-height:300px;border-radius:16px;background:#111
 }
+.msg-media-error{
+  box-sizing:border-box;width:max-content;max-width:100%;margin-top:8px;padding:9px 11px;border-radius:10px;
+  background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:12px;line-height:1.5;
+  white-space:nowrap
+}
 .msg-card-assistant > *:first-child{margin-top:0}
 .msg-card-assistant > *:last-child{margin-bottom:0}
 .msg-card-assistant p,
@@ -684,6 +693,8 @@ button{cursor:pointer}
   color:#201d19;
   font-size:12px;
   letter-spacing:-.01em;
+  text-align:right;
+  text-align-last:right;
   appearance:none;
   background-image:none;
 }

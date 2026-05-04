@@ -3,7 +3,7 @@
 Runs one independent loop per pool type (basic / super / heavy), each with
 its own configurable interval read from:
 
-    account.refresh.basic_interval_sec  (default 36000 — 10 h)
+    account.refresh.basic_interval_sec  (default 86400 — 24 h)
     account.refresh.super_interval_sec  (default  7200 —  2 h)
     account.refresh.heavy_interval_sec  (default  7200 —  2 h)
 """
@@ -16,7 +16,7 @@ from .refresh import AccountRefreshService
 
 # Pool → (config key, built-in default seconds)
 _POOL_CONFIG: dict[str, tuple[str, int]] = {
-    "basic": ("account.refresh.basic_interval_sec", 36_000),
+    "basic": ("account.refresh.basic_interval_sec", 86_400),
     "super": ("account.refresh.super_interval_sec",  7_200),
     "heavy": ("account.refresh.heavy_interval_sec",  7_200),
 }
@@ -39,8 +39,16 @@ class AccountRefreshScheduler:
         self._tasks:  list[asyncio.Task] = []
         self._stop    = asyncio.Event()
 
+    def bind_service(self, refresh_service: AccountRefreshService) -> None:
+        """Update the refresh service used by the singleton scheduler."""
+        self._service = refresh_service
+
+    def is_running(self) -> bool:
+        """Return True while any pool refresh loop is still active."""
+        return any(not task.done() for task in self._tasks)
+
     def start(self) -> None:
-        if self._tasks and not all(t.done() for t in self._tasks):
+        if self.is_running():
             return
         self._stop.clear()
         self._tasks = [
@@ -54,11 +62,14 @@ class AccountRefreshScheduler:
         )
 
     def stop(self) -> None:
+        was_running = self.is_running()
         self._stop.set()
         for t in self._tasks:
             if not t.done():
                 t.cancel()
-        logger.info("account refresh scheduler stopped")
+        self._tasks = []
+        if was_running:
+            logger.info("account refresh scheduler stopped")
 
     async def _loop(self, pool: str) -> None:
         while not self._stop.is_set():
@@ -102,6 +113,8 @@ def get_account_refresh_scheduler(
     global _scheduler
     if _scheduler is None:
         _scheduler = AccountRefreshScheduler(refresh_service)
+    else:
+        _scheduler.bind_service(refresh_service)
     return _scheduler
 
 

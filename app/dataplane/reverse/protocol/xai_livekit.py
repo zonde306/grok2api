@@ -23,18 +23,26 @@ _WS_PARAMS: Dict[str, str] = {
 
 
 def build_token_request_payload(
-    voice:       str   = "ara",
-    personality: str   = "assistant",
-    speed:       float = 1.0,
+    voice:              str   = "ara",
+    personality:        str   = "assistant",
+    speed:              float = 1.0,
+    custom_instruction: str   = "",
 ) -> bytes:
     """Return the JSON body for POST /rest/livekit/tokens."""
-    session_payload = orjson.dumps({
+    payload_dict = {
         "voice":           voice,
-        "personality":     personality,
+        "personality":     None,
         "playback_speed":  speed,
         "enable_vision":   False,
         "turn_detection":  {"type": "server_vad"},
-    }).decode()
+    }
+    if custom_instruction:
+        payload_dict["instructions"] = custom_instruction
+        payload_dict["is_raw_instructions"] = True
+    else:
+        payload_dict["personality"] = personality
+
+    session_payload = orjson.dumps(payload_dict).decode()
 
     return orjson.dumps({
         "sessionPayload":       session_payload,

@@ -1,10 +1,11 @@
-<img width="9936" height="2538" alt="Grok2API" src="https://github.com/user-attachments/assets/794a713b-eb78-4f09-9ec1-ac122d6ca2f9" />
+<img alt="Grok2API" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Version](https://img.shields.io/badge/version-2.0.0.rc0-111827)](../pyproject.toml)
+[![Version](https://img.shields.io/badge/version-2.0.4.rc2-111827)](../pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-16a34a)](../LICENSE)
 [![中文](https://img.shields.io/badge/中文-2563EB?logo=bookstack&logoColor=white)](../README.md)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/chenyme/grok2api)
 [![Project%20Docs](https://img.shields.io/badge/Project%20Docs-0F766E?logo=readthedocs&logoColor=white)](https://blog.cheny.me/blog/posts/grok2api)
 
 > [!NOTE]
@@ -169,13 +170,15 @@ docker compose up -d
 | `LOG_LEVEL` | Log level | `INFO` |
 | `LOG_FILE_ENABLED` | Write local log files | `true` |
 | `ACCOUNT_SYNC_INTERVAL` | Account directory incremental sync interval in seconds | `30` |
+| `ACCOUNT_SYNC_ACTIVE_INTERVAL` | Active sync interval after account-directory changes are detected, in seconds | `3` |
 | `SERVER_HOST` | Service bind address | `0.0.0.0` |
 | `SERVER_PORT` | Service port | `8000` |
 | `SERVER_WORKERS` | Granian worker count | `1` |
 | `HOST_PORT` | Docker Compose published host port | `8000` |
-| `DATA_DIR` | Local data directory | `./data` |
+| `DATA_DIR` | Local data root for accounts, locally cached media files, and cache indexes | `./data` |
 | `LOG_DIR` | Local log directory | `./logs` |
 | `ACCOUNT_STORAGE` | Account storage backend | `local` |
+| `ACCOUNT_LOCAL_PATH` | SQLite path for `local` account storage | `${DATA_DIR}/accounts.db` |
 | `ACCOUNT_REDIS_URL` | Redis DSN for `redis` mode | `""` |
 | `ACCOUNT_MYSQL_URL` | SQLAlchemy DSN for `mysql` mode | `""` |
 | `ACCOUNT_POSTGRESQL_URL` | SQLAlchemy DSN for `postgresql` mode | `""` |
@@ -183,17 +186,22 @@ docker compose up -d
 | `ACCOUNT_SQL_MAX_OVERFLOW` | Maximum overflow connections above pool size | `10` |
 | `ACCOUNT_SQL_POOL_TIMEOUT` | Seconds to wait for a free connection from the pool | `30` |
 | `ACCOUNT_SQL_POOL_RECYCLE` | Max connection lifetime in seconds before reconnect | `1800` |
+| `CONFIG_LOCAL_PATH` | Runtime config file path for `local` config storage | `${DATA_DIR}/config.toml` |
+
+Runtime config can also be overridden with `GROK_`-prefixed environment variables. For example, `GROK_APP_API_KEY` overrides `app.api_key`, and `GROK_FEATURES_STREAM` overrides `features.stream`.
 
 ### System Configuration Groups
 
 | Group | Key Items |
 | :-- | :-- |
 | `app` | `app_key`, `app_url`, `api_key`, `webui_enabled`, `webui_key` |
-| `features` | `temporary`, `memory`, `stream`, `thinking`, `dynamic_statsig`, `enable_nsfw`, `custom_instruction`, `image_format`, `video_format` |
+| `logging` | `file_level`, `max_files` |
+| `features` | `temporary`, `memory`, `stream`, `thinking`, `auto_chat_mode_fallback`, `thinking_summary`, `dynamic_statsig`, `enable_nsfw`, `show_search_sources`, `custom_instruction`, `image_format`, `imagine_public_image_proxy`, `video_format` |
 | `proxy.egress` | `mode`, `proxy_url`, `proxy_pool`, `resource_proxy_url`, `resource_proxy_pool`, `skip_ssl_verify` |
 | `proxy.clearance` | `mode`, `cf_cookies`, `user_agent`, `browser`, `flaresolverr_url`, `timeout_sec`, `refresh_interval` |
 | `retry` | `reset_session_status_codes`, `max_retries`, `on_codes` |
 | `account.refresh` | `basic_interval_sec`, `super_interval_sec`, `heavy_interval_sec`, `usage_concurrency`, `on_demand_min_interval_sec` |
+| `cache.local` | `image_max_mb`, `video_max_mb` |
 | `chat` | `timeout` |
 | `image` | `timeout`, `stream_timeout` |
 | `video` | `timeout` |
@@ -207,6 +215,7 @@ docker compose up -d
 | Config | Allowed Values |
 | :-- | :-- |
 | `features.image_format` | `grok_url`, `local_url`, `grok_md`, `local_md`, `base64` |
+| `features.imagine_public_image_proxy` | `true`, `false` |
 | `features.video_format` | `grok_url`, `local_url`, `grok_html`, `local_html` |
 
 <br>
@@ -219,8 +228,8 @@ docker compose up -d
 | Model | mode | tier |
 | :-- | :-- | :-- |
 | `grok-4.20-0309-non-reasoning` | `fast` | `basic` |
-| `grok-4.20-0309` | `auto` | `basic` |
-| `grok-4.20-0309-reasoning` | `expert` | `basic` |
+| `grok-4.20-0309` | `auto` | `super` |
+| `grok-4.20-0309-reasoning` | `expert` | `super` |
 | `grok-4.20-0309-non-reasoning-super` | `fast` | `super` |
 | `grok-4.20-0309-super` | `auto` | `super` |
 | `grok-4.20-0309-reasoning-super` | `expert` | `super` |
@@ -228,6 +237,11 @@ docker compose up -d
 | `grok-4.20-0309-heavy` | `auto` | `heavy` |
 | `grok-4.20-0309-reasoning-heavy` | `expert` | `heavy` |
 | `grok-4.20-multi-agent-0309` | `heavy` | `heavy` |
+| `grok-4.20-fast` | `fast` | `basic`, prefers higher-tier pools |
+| `grok-4.20-auto` | `auto` | `super`, prefers higher-tier pools |
+| `grok-4.20-expert` | `expert` | `super`, prefers higher-tier pools |
+| `grok-4.20-heavy` | `heavy` | `heavy` |
+| `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
 
 ### Image
 
@@ -265,8 +279,8 @@ docker compose up -d
 | `POST /v1/videos` | Yes | Asynchronous video job creation |
 | `GET /v1/videos/{video_id}` | Yes | Retrieve a video job |
 | `GET /v1/videos/{video_id}/content` | Yes | Fetch the final video file |
-| `GET /v1/files/image?id=...` | No | Fetch a locally cached image |
 | `GET /v1/files/video?id=...` | No | Fetch a locally cached video |
+| `GET /v1/files/image?id=...` | No | Fetch a locally cached image |
 
 <br>
 
@@ -283,6 +297,17 @@ curl http://localhost:8000/v1/models \
   -H "Authorization: Bearer $GROK2API_API_KEY"
 ```
 
+<details>
+<summary>Field Notes</summary>
+<br>
+
+| Field | Location | Description |
+| :-- | :-- | :-- |
+| `Authorization` | Header | Required when `app.api_key` is non-empty. Use `Bearer <api_key>` |
+
+<br>
+</details>
+
 <br>
 </details>
 
@@ -297,8 +322,9 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4.20-0309",
+    "model": "grok-4.20-auto",
     "stream": true,
+    "reasoning_effort": "high",
     "messages": [
       {"role":"user","content":"Hello"}
     ]
@@ -346,20 +372,30 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-Key fields:
+<details>
+<summary>Field Notes</summary>
+<br>
 
 | Field | Description |
 | :-- | :-- |
 | `messages` | Supports text and multimodal content blocks |
-| `thinking` | Whether to explicitly emit reasoning output |
-| `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `stream` | Whether to stream output; falls back to `features.stream` when omitted |
+| `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`; `none` disables reasoning output |
+| `temperature` / `top_p` | Sampling parameters, default `0.8` / `0.95` |
 | `tools` | OpenAI function tools structure |
-| `image_config.n` | `1-4` for `lite`, `1-10` for other image models, `1-2` for edit |
-| `image_config.size` | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
-| `video_config.seconds` | `6`, `10`, `12`, `16`, `20` |
-| `video_config.size` | `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
-| `video_config.resolution_name` | `480p`, `720p` |
-| `video_config.preset` | `fun`, `normal`, `spicy`, `custom` |
+| `tool_choice` | `auto`, `required`, or a specific function tool |
+| `image_config` | Image model parameters |
+| \|_ `n` | `1-4` for `lite`, `1-10` for other image models, `1-2` for edit |
+| \|_ `size` | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
+| \|_ `response_format` | `url`, `b64_json` |
+| `video_config` | Video model parameters |
+| \|_ `seconds` | `6`, `10`, `12`, `16`, `20` |
+| \|_ `size` | `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
+| \|_ `resolution_name` | `480p`, `720p` |
+| \|_ `preset` | `fun`, `normal`, `spicy`, `custom` |
+
+<br>
+</details>
 
 <br>
 </details>
@@ -373,11 +409,33 @@ curl http://localhost:8000/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4.20-0309",
+    "model": "grok-4.20-auto",
     "input": "Explain quantum tunneling",
-    "stream": true
+    "instructions": "Keep the answer concise.",
+    "stream": true,
+    "reasoning": {
+      "effort": "high"
+    }
   }'
 ```
+
+<details>
+<summary>Field Notes</summary>
+<br>
+
+| Field | Description |
+| :-- | :-- |
+| `model` | Model ID. It must be an enabled model |
+| `input` | User input; supports a string or a Responses API-style message array |
+| `instructions` | Optional system instructions injected as a system message |
+| `stream` | Whether to stream output; falls back to `features.stream` when omitted |
+| `reasoning` | Optional reasoning configuration |
+| \|_ `effort` | `none` disables reasoning output; other values enable it |
+| `temperature` / `top_p` | Sampling parameters, default `0.8` / `0.95` |
+| `tools` / `tool_choice` | Function tools are supported; flat Responses API tool definitions are normalized automatically |
+
+<br>
+</details>
 
 <br>
 </details>
@@ -391,8 +449,12 @@ curl http://localhost:8000/v1/messages \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -d '{
-    "model": "grok-4.20-0309",
+    "model": "grok-4.20-auto",
     "stream": true,
+    "thinking": {
+      "type": "enabled",
+      "budget_tokens": 1024
+    },
     "messages": [
       {
         "role": "user",
@@ -401,6 +463,24 @@ curl http://localhost:8000/v1/messages \
     ]
   }'
 ```
+
+<details>
+<summary>Field Notes</summary>
+<br>
+
+| Field | Description |
+| :-- | :-- |
+| `model` | Model ID. It must be an enabled model |
+| `messages` | Anthropic Messages-format messages; supports text, image, document, and tool-result blocks |
+| `system` | Optional system prompt; accepts a string or an array of text blocks |
+| `stream` | Whether to stream output; falls back to `features.stream` when omitted |
+| `thinking` | Optional reasoning configuration |
+| \|_ `type` | `disabled` disables reasoning output; other configs enable it |
+| `max_tokens` | Accepted but currently ignored because Grok upstream does not expose this parameter |
+| `tools` / `tool_choice` | Anthropic tool definitions are supported and converted to internal function tools |
+
+<br>
+</details>
 
 <br>
 </details>
@@ -417,10 +497,25 @@ curl http://localhost:8000/v1/images/generations \
     "model": "grok-imagine-image",
     "prompt": "A cat floating in space",
     "n": 1,
-    "size": "1024x1024",
+    "size": "1792x1024",
     "response_format": "url"
   }'
 ```
+
+<details>
+<summary>Field Notes</summary>
+<br>
+
+| Field | Description |
+| :-- | :-- |
+| `model` | Image model: `grok-imagine-image-lite`, `grok-imagine-image`, or `grok-imagine-image-pro` |
+| `prompt` | Image generation prompt |
+| `n` | Number of images; `1-4` for `lite`, `1-10` for other image models |
+| `size` | Supports `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
+| `response_format` | `url` or `b64_json` |
+
+<br>
+</details>
 
 <br>
 </details>
@@ -440,6 +535,23 @@ curl http://localhost:8000/v1/images/edits \
   -F "response_format=url"
 ```
 
+<details>
+<summary>Field Notes</summary>
+<br>
+
+| Field | Description |
+| :-- | :-- |
+| `model` | Image-edit model, currently `grok-imagine-image-edit` |
+| `prompt` | Edit instruction |
+| `image[]` | Reference image multipart file field; up to 5 images are used |
+| `n` | Number of outputs, range `1-2` |
+| `size` | Currently only `1024x1024` is supported |
+| `response_format` | `url` or `b64_json` |
+| `mask` | Not supported yet; passing it returns a validation error |
+
+<br>
+</details>
+
 <br>
 </details>
 
@@ -455,7 +567,8 @@ curl http://localhost:8000/v1/videos \
   -F "seconds=10" \
   -F "size=1792x1024" \
   -F "resolution_name=720p" \
-  -F "preset=normal"
+  -F "preset=normal" \
+  -F "input_reference[]=@/path/to/reference.png"
 ```
 
 ```bash
@@ -466,6 +579,24 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
   -H "Authorization: Bearer $GROK2API_API_KEY" \
   -o result.mp4
 ```
+
+<details>
+<summary>Field Notes</summary>
+<br>
+
+| Field | Description |
+| :-- | :-- |
+| `model` | Video model, currently `grok-imagine-video` |
+| `prompt` | Video generation prompt |
+| `seconds` | Video length: `6`, `10`, `12`, `16`, `20` |
+| `size` | Supports `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
+| `resolution_name` | `480p` or `720p` |
+| `preset` | `fun`, `normal`, `spicy`, `custom` |
+| `input_reference[]` | Optional image-to-video reference multipart file field; at most the first 7 images are used |
+| `video_id` | Video job ID returned by `POST /v1/videos`; used to retrieve the job or download the final video |
+
+<br>
+</details>
 
 <br>
 </details>

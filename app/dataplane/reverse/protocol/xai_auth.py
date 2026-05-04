@@ -15,6 +15,12 @@ from app.platform.net.grpc import GrpcClient, GrpcStatus
 from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
 from app.dataplane.proxy import get_proxy_runtime
 from app.dataplane.proxy.adapters.session import ResettableSession, build_session_kwargs
+from app.dataplane.reverse.runtime.endpoint_table import (
+    ACCEPT_TOS as ACCEPT_TOS_URL,
+    BASE as GROK_ORIGIN,
+    NSFW_MGMT as NSFW_MGMT_URL,
+    SET_BIRTH as SET_BIRTH_URL,
+)
 from app.dataplane.reverse.transport.grpc_web import post_grpc_web
 from app.dataplane.reverse.transport.http import post_json
 
@@ -25,9 +31,7 @@ if TYPE_CHECKING:
 # Endpoint URLs
 # ------------------------------------------------------------------
 
-ACCEPT_TOS_URL = "https://accounts.x.ai/auth_mgmt.AuthManagement/SetTosAcceptedVersion"
-NSFW_MGMT_URL  = "https://grok.com/auth_mgmt.AuthManagement/UpdateUserFeatureControls"
-SET_BIRTH_URL  = "https://grok.com/rest/auth/set-birth-date"
+ACCOUNTS_ORIGIN = "https://accounts.x.ai"
 
 # ------------------------------------------------------------------
 # Payload builders
@@ -94,7 +98,11 @@ async def _grpc_call(
 
     if not shared:
         proxy = await get_proxy_runtime()
-        lease = await proxy.acquire(scope=ProxyScope.APP, kind=RequestKind.HTTP)
+        lease = await proxy.acquire(
+            scope=ProxyScope.APP,
+            kind=RequestKind.HTTP,
+            clearance_origin=origin,
+        )
 
     try:
         _, trailers = await post_grpc_web(
@@ -142,8 +150,8 @@ async def accept_tos(token: str) -> GrpcStatus:
         token,
         build_accept_tos_payload(),
         label   = "accept_tos",
-        origin  = "https://accounts.x.ai",
-        referer = "https://accounts.x.ai/accept-tos",
+        origin  = ACCOUNTS_ORIGIN,
+        referer = f"{ACCOUNTS_ORIGIN}/accept-tos",
     )
 
 
@@ -154,8 +162,8 @@ async def set_nsfw(token: str, enabled: bool) -> GrpcStatus:
         token,
         build_nsfw_mgmt_payload(enabled),
         label   = "enable_nsfw" if enabled else "disable_nsfw",
-        origin  = "https://grok.com",
-        referer = "https://grok.com/?_s=data",
+        origin  = GROK_ORIGIN,
+        referer = f"{GROK_ORIGIN}/?_s=data",
     )
 
 
@@ -186,14 +194,18 @@ async def set_birth_date(
 
     if not shared:
         proxy = await get_proxy_runtime()
-        lease = await proxy.acquire(scope=ProxyScope.APP, kind=RequestKind.HTTP)
+        lease = await proxy.acquire(
+            scope=ProxyScope.APP,
+            kind=RequestKind.HTTP,
+            clearance_origin=GROK_ORIGIN,
+        )
 
     payload = orjson.dumps(build_set_birth_payload())
     try:
         result = await post_json(
             SET_BIRTH_URL, token, payload,
             lease=lease, timeout_s=timeout_s,
-            origin="https://grok.com", referer="https://grok.com/?_s=data",
+            origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",
             session=session,
         )
     except UpstreamError as exc:
@@ -216,16 +228,20 @@ async def set_birth_date(
 
 
 async def nsfw_sequence(token: str) -> None:
-    """Run set_birth_date → enable_nsfw sharing one session + lease.
+    """Run accept_tos → set_birth_date → enable_nsfw.
 
-    Compared to calling the two functions individually this saves one TCP+TLS
-    handshake per token, which matters in high-concurrency batch scenarios.
+    accept_tos runs against ``accounts.x.ai`` with its own host-specific
+    clearance. The grok.com birth-date and NSFW update steps still share one
+    session + lease to avoid an extra handshake per token.
     """
-    cfg       = get_config()
-    timeout_s = cfg.get_float("nsfw.timeout", 30.0)
+    await accept_tos(token)
 
     proxy = await get_proxy_runtime()
-    lease = await proxy.acquire(scope=ProxyScope.APP, kind=RequestKind.HTTP)
+    lease = await proxy.acquire(
+        scope=ProxyScope.APP,
+        kind=RequestKind.HTTP,
+        clearance_origin=GROK_ORIGIN,
+    )
 
     kwargs = build_session_kwargs(lease=lease)
     try:
@@ -233,7 +249,7 @@ async def nsfw_sequence(token: str) -> None:
             await set_birth_date(token, session=session, lease=lease)
             await _grpc_call(
                 NSFW_MGMT_URL, token, build_nsfw_mgmt_payload(),
-                label="enable_nsfw", origin="https://grok.com", referer="https://grok.com/?_s=data",
+                label="enable_nsfw", origin=GROK_ORIGIN, referer=f"{GROK_ORIGIN}/?_s=data",
                 session=session, lease=lease,
             )
         await proxy.feedback(lease, ProxyFeedback(kind=ProxyFeedbackKind.SUCCESS, status_code=200))

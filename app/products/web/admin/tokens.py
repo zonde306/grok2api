@@ -87,6 +87,11 @@ class ToggleTokenDisabledRequest(BaseModel):
     disabled: bool
 
 
+class ToggleTokensDisabledRequest(BaseModel):
+    tokens: list[str]
+    disabled: bool
+
+
 class TokenImportItem(BaseModel):
     token: str
     tags: list[str] = []
@@ -356,6 +361,69 @@ async def toggle_token_disabled(
     )])
     logger.info("admin token restored: token={}", _mask(token))
     return _json({"status": "success", "token": token, "disabled": False})
+
+
+@router.post("/tokens/disabled/batch")
+async def toggle_tokens_disabled(
+    req: ToggleTokensDisabledRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in req.tokens:
+        token = _sanitize(raw)
+        if token and token not in seen:
+            seen.add(token)
+            cleaned.append(token)
+    if not cleaned:
+        raise ValidationError("No valid tokens provided", param="tokens")
+
+    records = await repo.get_accounts(cleaned)
+    if not records:
+        raise AppError(
+            "No matching accounts found",
+            kind=ErrorKind.VALIDATION,
+            code="account_not_found",
+            status=404,
+        )
+
+    ts = now_ms()
+    patches: list[AccountPatch] = []
+    for record in records:
+        if req.disabled:
+            patches.append(AccountPatch(
+                token=record.token,
+                status=AccountStatus.DISABLED,
+                state_reason="operator_disabled",
+                ext_merge={
+                    **record.ext,
+                    "disabled_at": ts,
+                    "disabled_reason": "operator_disabled",
+                },
+            ))
+        else:
+            patches.append(AccountPatch(
+                token=record.token,
+                status=AccountStatus.ACTIVE,
+                clear_failures=True,
+            ))
+
+    result = await repo.patch_accounts(patches)
+    logger.info(
+        "admin tokens disabled batch updated: disabled={} requested_count={} patched_count={}",
+        req.disabled,
+        len(cleaned),
+        result.patched,
+    )
+    return _json({
+        "status": "success",
+        "disabled": req.disabled,
+        "summary": {
+            "total": len(cleaned),
+            "ok": result.patched,
+            "fail": max(0, len(cleaned) - result.patched),
+        },
+    })
 
 
 @router.put("/tokens/pool")

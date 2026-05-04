@@ -8,47 +8,53 @@ from .spec import ModelSpec
 # Add new models here; no other files need to change.
 # ---------------------------------------------------------------------------
 
+# fmt: off
 MODELS: tuple[ModelSpec, ...] = (
     # === Chat ==============================================================
 
-    # Basic+
-    ModelSpec("grok-4.20-0309-non-reasoning",           ModeId.FAST,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning"),
-    ModelSpec("grok-4.20-0309",                         ModeId.AUTO,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309"),
-    ModelSpec("grok-4.20-0309-reasoning",               ModeId.EXPERT, Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning"),
+    # Basic fast; auto/expert require Super+
+    ModelSpec("grok-4.20-0309-non-reasoning",           ModeId.FAST,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning"),
+    ModelSpec("grok-4.20-0309",                         ModeId.AUTO,     Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309"),
+    ModelSpec("grok-4.20-0309-reasoning",               ModeId.EXPERT,   Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning"),
     # Super+
-    ModelSpec("grok-4.20-0309-non-reasoning-super",     ModeId.FAST,   Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Super"),
-    ModelSpec("grok-4.20-0309-super",                   ModeId.AUTO,   Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Super"),
-    ModelSpec("grok-4.20-0309-reasoning-super",         ModeId.EXPERT, Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Super"),
+    ModelSpec("grok-4.20-0309-non-reasoning-super",     ModeId.FAST,     Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Super"),
+    ModelSpec("grok-4.20-0309-super",                   ModeId.AUTO,     Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Super"),
+    ModelSpec("grok-4.20-0309-reasoning-super",         ModeId.EXPERT,   Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Super"),
     # Heavy+
-    ModelSpec("grok-4.20-0309-non-reasoning-heavy",     ModeId.FAST,   Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Heavy"),
-    ModelSpec("grok-4.20-0309-heavy",                   ModeId.AUTO,   Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Heavy"),
-    ModelSpec("grok-4.20-0309-reasoning-heavy",         ModeId.EXPERT, Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Heavy"),
-    ModelSpec("grok-4.20-multi-agent-0309",             ModeId.HEAVY,  Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Multi-Agent 0309"),
+    ModelSpec("grok-4.20-0309-non-reasoning-heavy",     ModeId.FAST,     Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Non-Reasoning Heavy"),
+    ModelSpec("grok-4.20-0309-heavy",                   ModeId.AUTO,     Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Heavy"),
+    ModelSpec("grok-4.20-0309-reasoning-heavy",         ModeId.EXPERT,   Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 0309 Reasoning Heavy"),
+    ModelSpec("grok-4.20-multi-agent-0309",             ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Multi-Agent 0309"),
 
     # --- 硬优先级反向选池 (heavy → super → basic) ---
-    ModelSpec("grok-4.20-fast",                        ModeId.FAST,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Fast",          prefer_best=True),
-    ModelSpec("grok-4.20-auto",                        ModeId.AUTO,   Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Auto",          prefer_best=True),
-    ModelSpec("grok-4.20-expert",                      ModeId.EXPERT, Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Expert",        prefer_best=True),
-    ModelSpec("grok-4.20-heavy",                       ModeId.HEAVY,  Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Heavy",         prefer_best=True),
+    ModelSpec("grok-4.20-fast",                         ModeId.FAST,     Tier.BASIC, Capability.CHAT,       True, "Grok 4.20 Fast",          prefer_best=True),
+    ModelSpec("grok-4.20-auto",                         ModeId.AUTO,     Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 Auto",          prefer_best=True),
+    ModelSpec("grok-4.20-expert",                       ModeId.EXPERT,   Tier.SUPER, Capability.CHAT,       True, "Grok 4.20 Expert",        prefer_best=True),
+    ModelSpec("grok-4.20-heavy",                        ModeId.HEAVY,    Tier.HEAVY, Capability.CHAT,       True, "Grok 4.20 Heavy",         prefer_best=True),
+
+    # === grok-4.3 (grok-420-computer-use-sa) ==================================
+    # Super+（basic 池不支持此模式）
+    ModelSpec("grok-4.3-beta",                          ModeId.GROK_4_3, Tier.SUPER, Capability.CHAT,       True, "Grok 4.3 Beta"),
 
     # === Image ==============================================================
 
-    # Basic+
-    ModelSpec("grok-imagine-image-lite",                ModeId.FAST,   Tier.BASIC, Capability.IMAGE,      True, "Grok Imagine Image Lite"),
+    # Basic fast
+    ModelSpec("grok-imagine-image-lite",                ModeId.FAST,     Tier.BASIC, Capability.IMAGE,      True, "Grok Imagine Image Lite"),
     # Super+
-    ModelSpec("grok-imagine-image",                     ModeId.AUTO,   Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image"),
-    ModelSpec("grok-imagine-image-pro",                 ModeId.AUTO,   Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image Pro"),
-    
+    ModelSpec("grok-imagine-image",                     ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image"),
+    ModelSpec("grok-imagine-image-pro",                 ModeId.AUTO,     Tier.SUPER, Capability.IMAGE,      True, "Grok Imagine Image Pro"),
+
     # === Image Edit =========================================================
 
     # Super+
-    ModelSpec("grok-imagine-image-edit",                ModeId.AUTO,   Tier.SUPER, Capability.IMAGE_EDIT, True, "Grok Imagine Image Edit"),
-    
+    ModelSpec("grok-imagine-image-edit",                ModeId.AUTO,     Tier.SUPER, Capability.IMAGE_EDIT, True, "Grok Imagine Image Edit"),
+
     # === Video ==============================================================
 
     # Super+
-    ModelSpec("grok-imagine-video",                     ModeId.AUTO,   Tier.SUPER, Capability.VIDEO,      True, "Grok Imagine Video"),
+    ModelSpec("grok-imagine-video",                     ModeId.AUTO,     Tier.SUPER, Capability.VIDEO,      True, "Grok Imagine Video"),
 )
+# fmt: on
 
 # ---------------------------------------------------------------------------
 # Internal lookup structures — built once at import time.
@@ -64,6 +70,7 @@ for _m in MODELS:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def get(model_name: str) -> ModelSpec | None:
     """Return the spec for *model_name*, or ``None`` if not registered."""

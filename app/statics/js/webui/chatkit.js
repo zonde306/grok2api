@@ -3,6 +3,7 @@
   const voiceSelect = document.getElementById('voiceSelect');
   const personalitySelect = document.getElementById('personalitySelect');
   const speedSelect = document.getElementById('speedSelect');
+  const instructionInput = document.getElementById('instructionInput');
   const startVoiceBtn = document.getElementById('startVoiceBtn');
   const muteVoiceBtn = document.getElementById('muteVoiceBtn');
   const newSessionBtn = document.getElementById('newSessionBtn');
@@ -383,14 +384,18 @@
     );
 
     try {
-      const params = new URLSearchParams({
-        voice: voiceSelect?.value || 'ara',
-        personality: personalitySelect?.value || 'assistant',
-        speed: speedSelect?.value || '1.0',
-      });
-      const res = await fetch(`${VOICE_ENDPOINT}?${params.toString()}`, {
-        headers: await getAuthHeaders(),
+      const headers = await getAuthHeaders();
+      headers['Content-Type'] = 'application/json';
+      const res = await fetch(VOICE_ENDPOINT, {
+        method: 'POST',
+        headers,
         cache: 'no-store',
+        body: JSON.stringify({
+          voice: voiceSelect?.value || 'ara',
+          personality: personalitySelect?.value || 'assistant',
+          speed: Number(speedSelect?.value || 1),
+          instruction: instructionInput?.value?.trim() || '',
+        }),
       });
       if (!res.ok) {
         const detail = await res.text().catch(() => '');

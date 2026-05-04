@@ -49,6 +49,7 @@ def make_stream_chunk(
     is_final:      bool      = False,
     finish_reason: str | None = None,
     usage:         dict | None = None,
+    annotations:   list[dict] | None = None,
 ) -> dict:
     choice: dict = {
         "index": index,
@@ -56,6 +57,9 @@ def make_stream_chunk(
     }
     if is_final:
         choice["finish_reason"] = finish_reason or "stop"
+        # annotations 仅在 final chunk 的 delta 中发送（Vercel AI SDK 读 delta.annotations）
+        if annotations:
+            choice["delta"]["annotations"] = annotations
 
     chunk: dict = {
         "id":      response_id,
@@ -98,6 +102,8 @@ def make_chat_response(
     response_id:       str | None  = None,
     usage:             dict | None = None,
     reasoning_content: str | None  = None,
+    search_sources:    list[dict] | None = None,
+    annotations:       list[dict] | None = None,
 ) -> dict:
     rid = response_id or make_response_id()
     pt  = estimate_prompt_tokens(prompt_content)
@@ -108,8 +114,9 @@ def make_chat_response(
     msg: dict = {"role": "assistant", "content": content}
     if reasoning_content:
         msg["reasoning_content"] = reasoning_content
-
-    return {
+    if annotations:
+        msg["annotations"] = annotations
+    resp = {
         "id":      rid,
         "object":  "chat.completion",
         "created": int(time.time()),
@@ -121,6 +128,10 @@ def make_chat_response(
         }],
         "usage": usage or build_usage(pt, ct, reasoning_tokens=rt),
     }
+    # search_sources 放在响应根对象（避免 Vercel AI SDK 的 message strict schema 拒绝未知字段）
+    if search_sources:
+        resp["search_sources"] = search_sources
+    return resp
 
 
 # ---------------------------------------------------------------------------

@@ -20,14 +20,16 @@ _MODE_NAMES: dict[int, str] = {
     1: "fast",
     2: "expert",
     3: "heavy",
+    4: "grok-420-computer-use-sa",
 }
 
 # Default window durations used as fallback when API call fails.
 _DEFAULT_WINDOW_SECS: dict[int, int] = {
-    0: 72_000,  # auto   — 20 h (basic) / 2 h (super/heavy, real value overrides)
-    1: 72_000,  # fast   — 20 h (basic)
-    2: 36_000,  # expert — 10 h (basic)
+    0: 7_200,  # auto   — 2 h  (super/heavy only)
+    1: 86_400,  # fast   — 24 h (basic; real value overrides for super/heavy)
+    2: 7_200,  # expert — 2 h  (super/heavy only)
     3: 7_200,  # heavy  — 2 h  (heavy-pool only)
+    4: 7_200,  # grok_4_3 — 2 h  (super/heavy only)
 }
 
 
@@ -41,7 +43,9 @@ def _build_payload(mode_name: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def parse_rate_limits(body: dict) -> dict | None:
+def parse_rate_limits(
+    body: dict, *, default_window_seconds: int = 72_000
+) -> dict | None:
     """Parse flat rate-limits response.
 
     Expected format::
@@ -65,7 +69,7 @@ def parse_rate_limits(body: dict) -> dict | None:
     return {
         "remaining": int(remaining),
         "total": int(total) if total is not None else int(remaining),
-        "window_seconds": int(window_secs) if window_secs else 72_000,
+        "window_seconds": int(window_secs) if window_secs else default_window_seconds,
     }
 
 
@@ -142,7 +146,10 @@ async def _fetch_one(token: str, mode_id: int) -> object | None:
         )
         return None
 
-    data = parse_rate_limits(body)
+    data = parse_rate_limits(
+        body,
+        default_window_seconds=_DEFAULT_WINDOW_SECS.get(mode_id, 72_000),
+    )
     if data is None:
         logger.debug(
             "rate-limits response missing quota fields: token={}... mode={} body={}",
@@ -165,13 +172,13 @@ async def fetch_all_quotas(
 ) -> dict[int, object] | None:
     """Fetch quota windows for the requested modes concurrently.
 
-    ``mode_ids`` defaults to ``(0, 1, 2, 3)``. Returns ``{mode_id: QuotaWindow}``
+    ``mode_ids`` defaults to ``(0, 1, 2, 3, 4)``. Returns ``{mode_id: QuotaWindow}``
     for every mode that responded successfully, or ``None`` if every requested
     mode failed.
     """
     import asyncio
 
-    requested = mode_ids or (0, 1, 2, 3)
+    requested = mode_ids or (0, 1, 2, 3, 4)
     results = await asyncio.gather(
         *(_fetch_one(token, mode_id) for mode_id in requested), return_exceptions=True
     )

@@ -111,6 +111,67 @@
       line-height:1.35;
     }
     .cfg-desc  { max-width:520px; font-size:11px; color:#9a9a9a; line-height:1.45 }
+    .cfg-help {
+      position:relative;
+      width:16px;
+      height:16px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:0;
+      border-radius:50%;
+      border:1px solid #e6e6e6;
+      background:#fafafa;
+      color:#8d8d8d;
+      font-size:11px;
+      line-height:1;
+      font-weight:700;
+      cursor:help;
+      flex-shrink:0;
+    }
+    .cfg-help:hover,
+    .cfg-help:focus-visible {
+      color:#222;
+      border-color:#d6d6d6;
+      background:#fff;
+      outline:none;
+    }
+    .cfg-help-tip {
+      position:fixed;
+      box-sizing:border-box;
+      max-width:min(320px, calc(100vw - 24px));
+      padding:9px 10px;
+      border-radius:8px;
+      background:#171717;
+      color:#fff;
+      font-size:12px;
+      font-weight:500;
+      line-height:1.5;
+      text-align:left;
+      white-space:pre-line;
+      overflow-wrap:anywhere;
+      box-shadow:0 8px 24px rgba(0,0,0,.16);
+      opacity:0;
+      pointer-events:none;
+      transform:translateY(3px);
+      transition:opacity .15s, transform .15s;
+      z-index:1000;
+    }
+    .cfg-help-tip.visible {
+      opacity:1;
+      transform:translateY(0);
+    }
+    .cfg-help-tip::before {
+      content:'';
+      position:absolute;
+      left:var(--arrow-left, 50%);
+      width:8px;
+      height:8px;
+      background:#171717;
+      transform:translateX(-50%) rotate(45deg);
+    }
+    .cfg-help-tip[data-placement="top"]::before { bottom:-4px }
+    .cfg-help-tip[data-placement="bottom"]::before { top:-4px }
     .cfg-input-col { min-width:0; display:flex; align-items:center; justify-content:flex-start; gap:8px }
     .cfg-input-col.is-bool { justify-content:flex-end }
     .cfg-inline-action {
@@ -382,9 +443,11 @@ const SCHEMA_DEF = [
           { key: 'memory', label: '开启会话记忆', labelKey: 'config.schema.fields.memory.label', type: 'bool', desc: '启用 Grok Memory，允许模型跨会话记忆用户偏好与上下文。', descKey: 'config.schema.fields.memory.desc' },
           { key: 'stream', label: '默认流式输出', labelKey: 'config.schema.fields.stream.label', type: 'bool', desc: '请求未显式指定 stream 参数时所采用的默认值。', descKey: 'config.schema.fields.stream.desc' },
           { key: 'thinking', label: '默认思考输出', labelKey: 'config.schema.fields.thinking.label', type: 'bool', desc: '请求未显式指定 thinking 参数时所采用的默认值。启用后将在 reasoning_content 字段返回思考过程。', descKey: 'config.schema.fields.thinking.desc' },
+          { key: 'auto_chat_mode_fallback', label: 'AUTO 聊天模式回退', labelKey: 'config.schema.fields.autoChatModeFallback.label', type: 'bool', desc: 'AUTO 聊天模型在 auto 额度不可用时，自动尝试 fast 和 expert 聊天额度窗口。', descKey: 'config.schema.fields.autoChatModeFallback.desc' },
           { key: 'thinking_summary', label: '思考精简输出', labelKey: 'config.schema.fields.thinkingSummary.label', type: 'bool', desc: '启用后将思考过程提炼为结构化摘要。关闭时输出完整的原始推理过程，支持多 Agent 模型的协作详情与工具调用展示。', descKey: 'config.schema.fields.thinkingSummary.desc' },
           { key: 'dynamic_statsig', label: '动态 Statsig', labelKey: 'config.schema.fields.dynamicStatsig.label', type: 'bool', desc: '为每次请求动态生成 Statsig 设备指纹，以降低风控拦截概率。', descKey: 'config.schema.fields.dynamicStatsig.desc' },
           { key: 'enable_nsfw', label: '允许 NSFW 生成', labelKey: 'config.schema.fields.enableNsfw.label', type: 'bool', desc: '允许图像生成接口绕过 NSFW 内容过滤。', descKey: 'config.schema.fields.enableNsfw.desc' },
+          { key: 'show_search_sources', label: '正文追加信源', labelKey: 'config.schema.fields.showSearchSources.label', type: 'bool', desc: '搜索信源始终以 search_sources 字段输出。此选项控制是否同时在正文末尾追加 ## Sources 段落（兼容文本解析客户端）。', descKey: 'config.schema.fields.showSearchSources.desc' },
           { key: 'custom_instruction', label: '全局附加指令', labelKey: 'config.schema.fields.customInstruction.label', type: 'textarea', desc: '为每次请求注入统一的 system 消息，用于约束模型行为或固定角色设定。', descKey: 'config.schema.fields.customInstruction.desc' },
         ]
       },
@@ -404,8 +467,16 @@ const SCHEMA_DEF = [
               { value: 'local_md', label: 'Markdown（本地代理）', labelKey: 'config.schema.options.imageFormat.localMarkdown', disabledWhen: 'no_app_url', disabledTip: '请先填写 APP 访问地址', disabledTipKey: 'config.disabledTip.appUrlRequired' },
               { value: 'base64', label: 'Base64（内嵌）', labelKey: 'config.schema.options.imageFormat.base64' },
             ],
-            desc: 'grok_url / grok_md 直接返回 Grok CDN 地址，客户端需具备 CDN 访问能力；local_* 模式会先下载到服务端，再通过本地 URL 代理分发；base64 会以内嵌 Data URI 返回。',
+            desc: 'grok_url / grok_md 默认直接返回 Grok CDN 地址；local_* 模式会先下载到服务端，再通过本地 URL 代理分发；base64 会以内嵌 Data URI 返回。开启 Imagine Public 图片代理后，WebSocket 返回的 imagine-public 图片也会本地代理。',
             descKey: 'config.schema.fields.imageFormat.desc',
+          },
+          {
+            key: 'imagine_public_image_proxy',
+            label: 'Imagine Public 图片代理',
+            labelKey: 'config.schema.fields.imaginePublicImageProxy.label',
+            type: 'bool',
+            desc: '开启后将 WebSocket 返回的 imagine-public 图片下载到服务端，再通过本地 URL 代理分发；关闭时保持公开图片直返。',
+            descKey: 'config.schema.fields.imaginePublicImageProxy.desc',
           },
           {
             key: 'video_format',
@@ -432,11 +503,19 @@ const SCHEMA_DEF = [
         title: '配额刷新调度', titleKey: 'config.schema.groups.refreshSchedule',
         section: 'account.refresh',
         fields: [
-          { key: 'basic_interval_sec', label: 'Basic 刷新周期（秒）', labelKey: 'config.schema.fields.basicInterval.label', type: 'number', desc: 'basic 号池额度的定时刷新间隔，建议与配额窗口对齐（默认 36000 s / 10 h）。', descKey: 'config.schema.fields.basicInterval.desc' },
-          { key: 'super_interval_sec', label: 'Super 刷新周期（秒）', labelKey: 'config.schema.fields.superInterval.label', type: 'number', desc: 'super 号池额度的定时刷新间隔，建议与配额窗口对齐（默认 7200 s / 2 h）。', descKey: 'config.schema.fields.superInterval.desc' },
-          { key: 'heavy_interval_sec', label: 'Heavy 刷新周期（秒）', labelKey: 'config.schema.fields.heavyInterval.label', type: 'number', desc: 'heavy 号池额度的定时刷新间隔，建议与配额窗口对齐（默认 7200 s / 2 h）。', descKey: 'config.schema.fields.heavyInterval.desc' },
-          { key: 'on_demand_min_interval_sec', label: '按需刷新最小间隔（秒）', labelKey: 'config.schema.fields.onDemandMinInterval.label', type: 'number', desc: '请求链路触发刷新（例如收到 429）时的节流间隔。N 秒内重复触发只执行一次，避免批量打爆配额接口。', descKey: 'config.schema.fields.onDemandMinInterval.desc' },
+          { key: 'enabled', label: '启用配额刷新', labelKey: 'config.schema.fields.refreshEnabled.label', type: 'bool', desc: '开启后自动进入配额刷新模式，关闭后自动进入自动重试模式。', descKey: 'config.schema.fields.refreshEnabled.desc', help: '开启：配额刷新模式，scheduler 周期同步真实配额，选号按评分。\n关闭：自动重试模式，不主动探测 upstream，选号随机，出错自动换号重试最多 5 次。\n建议：万级以上账号关闭，避免主动探测触发 upstream 429。', helpKey: 'config.schema.fields.refreshEnabled.help' },
+          { key: 'basic_interval_sec', label: 'Basic 周期（秒）', labelKey: 'config.schema.fields.basicInterval.label', type: 'number', desc: 'basic 号池共用周期：quota 模式下用于后台刷新，random 模式下用于 429 冷却。默认 86400s。', descKey: 'config.schema.fields.basicInterval.desc' },
+          { key: 'super_interval_sec', label: 'Super 周期（秒）', labelKey: 'config.schema.fields.superInterval.label', type: 'number', desc: 'super 号池共用周期：quota 模式下用于后台刷新，random 模式下用于 429 冷却。默认 7200s。', descKey: 'config.schema.fields.superInterval.desc' },
+          { key: 'heavy_interval_sec', label: 'Heavy 周期（秒）', labelKey: 'config.schema.fields.heavyInterval.label', type: 'number', desc: 'heavy 号池共用周期：quota 模式下用于后台刷新，random 模式下用于 429 冷却。默认 7200s。', descKey: 'config.schema.fields.heavyInterval.desc' },
+          { key: 'on_demand_min_interval_sec', label: '按需刷新间隔（秒）', labelKey: 'config.schema.fields.onDemandMinInterval.label', type: 'number', desc: '请求链路触发刷新（例如收到 429）时的节流间隔。N 秒内重复触发只执行一次，避免批量打爆配额接口。', descKey: 'config.schema.fields.onDemandMinInterval.desc' },
           { key: 'usage_concurrency', label: '刷新并发数', labelKey: 'config.schema.fields.usageConcurrency.label', type: 'number', desc: '并发调用 usage 接口刷新额度时允许的最大并行数。', descKey: 'config.schema.fields.usageConcurrency.desc' },
+        ]
+      },
+      {
+        title: '选号并发限制', titleKey: 'config.schema.groups.selection',
+        section: 'account.selection',
+        fields: [
+          { key: 'max_inflight', label: '单号并发上限', labelKey: 'config.schema.fields.maxInflight.label', type: 'number', desc: '单个账号同时在执行的请求上限，超过则选号路径跳过该号（两种模式共用）。', descKey: 'config.schema.fields.maxInflight.desc' },
         ]
       },
       {
@@ -624,6 +703,33 @@ const SCHEMA_DEF = [
       },
     ]
   },
+  {
+    id: 'cache', label: '缓存存储', labelKey: 'config.schema.tabs.cache',
+    groups: [
+      {
+        title: '本地媒体缓存', titleKey: 'config.schema.groups.localMediaCache',
+        section: 'cache.local',
+        fields: [
+          {
+            key: 'image_max_mb',
+            label: '图片缓存上限（MB）',
+            labelKey: 'config.schema.fields.imageCacheMaxMb.label',
+            type: 'number',
+            desc: '0 表示不限制。仅对本地代理落盘生效；超限后按最旧文件优先清理，并一次性回落到上限的 60%。',
+            descKey: 'config.schema.fields.imageCacheMaxMb.desc',
+          },
+          {
+            key: 'video_max_mb',
+            label: '视频缓存上限（MB）',
+            labelKey: 'config.schema.fields.videoCacheMaxMb.label',
+            type: 'number',
+            desc: '0 表示不限制。仅对本地代理落盘生效；超限后按最旧文件优先清理，并一次性回落到上限的 60%。',
+            descKey: 'config.schema.fields.videoCacheMaxMb.desc',
+          },
+        ]
+      },
+    ]
+  },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────────
@@ -720,6 +826,7 @@ function _localizeField(field) {
     ...field,
     label: field.labelKey ? tr(field.labelKey, null, field.label ?? field.key) : (field.label ?? field.key),
     desc: field.descKey ? tr(field.descKey, null, field.desc ?? '') : (field.desc ?? ''),
+    help: field.helpKey ? tr(field.helpKey, null, field.help ?? '') : (field.help ?? ''),
     options: field.options ? field.options.map(_localizeOption) : field.options,
   };
 }
@@ -821,6 +928,76 @@ function _el(tag, attrs, ...children) {
   });
   return el;
 }
+
+let _helpTipEl = null;
+let _activeHelpButton = null;
+
+function _hideHelpTip() {
+  if (_activeHelpButton) _activeHelpButton.removeAttribute('aria-describedby');
+  if (_helpTipEl) _helpTipEl.remove();
+  _helpTipEl = null;
+  _activeHelpButton = null;
+}
+
+function _positionHelpTip(button, tip) {
+  const margin = 12;
+  const rect = button.getBoundingClientRect();
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  const maxWidth = Math.max(120, viewportWidth - margin * 2);
+
+  tip.style.maxWidth = `${Math.min(320, maxWidth)}px`;
+  tip.style.left = '0px';
+  tip.style.top = '0px';
+
+  const tipRect = tip.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - tipRect.width / 2;
+  left = Math.max(margin, Math.min(left, viewportWidth - tipRect.width - margin));
+
+  let placement = 'top';
+  let top = rect.top - tipRect.height - 8;
+  if (top < margin) {
+    placement = 'bottom';
+    top = rect.bottom + 8;
+  }
+  if (top + tipRect.height > viewportHeight - margin) {
+    top = Math.max(margin, viewportHeight - tipRect.height - margin);
+  }
+
+  const arrowLeft = Math.max(12, Math.min(rect.left + rect.width / 2 - left, tipRect.width - 12));
+  tip.dataset.placement = placement;
+  tip.style.setProperty('--arrow-left', `${arrowLeft}px`);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+}
+
+function _showHelpTip(button) {
+  const text = button.getAttribute('data-tip');
+  if (!text) return;
+  _hideHelpTip();
+
+  const tip = _el('div', {
+    class: 'cfg-help-tip',
+    id: 'cfg-help-tip',
+    role: 'tooltip',
+  }, text);
+  document.body.appendChild(tip);
+  button.setAttribute('aria-describedby', 'cfg-help-tip');
+
+  _helpTipEl = tip;
+  _activeHelpButton = button;
+  _positionHelpTip(button, tip);
+  requestAnimationFrame(() => tip.classList.add('visible'));
+}
+
+window.addEventListener('resize', _hideHelpTip);
+window.addEventListener('scroll', _hideHelpTip, true);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') _hideHelpTip();
+});
+document.addEventListener('click', (event) => {
+  if (!event.target.closest?.('.cfg-help')) _hideHelpTip();
+});
 
 function renderInput(field, section, value) {
   const fp = _fullPath(section, field.key);
@@ -937,6 +1114,24 @@ function renderRow(field, section, tabId) {
     btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 5h5v5"/><path d="M10 14 19 5"/><path d="M19 14v5h-14v-14h5"/></svg>';
     btn.disabled = !Boolean(_getCurrentValue(section, field.key));
     labelChildren.push(btn);
+  }
+
+  if (field.help) {
+    labelChildren.push(_el('button', {
+      class: 'cfg-help',
+      type: 'button',
+      'aria-label': field.help,
+      'data-tip': field.help,
+      onmouseenter: (event) => _showHelpTip(event.currentTarget),
+      onmouseleave: _hideHelpTip,
+      onfocus: (event) => _showHelpTip(event.currentTarget),
+      onblur: _hideHelpTip,
+      onclick: (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        _showHelpTip(event.currentTarget);
+      },
+    }, '?'));
   }
 
   labelChildren.push(dot);

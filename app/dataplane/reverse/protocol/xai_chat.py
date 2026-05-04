@@ -6,9 +6,10 @@ from typing import Any
 
 import orjson
 
+from app.platform.errors import UpstreamError
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
-from app.control.model.enums import ModeId, MODE_STRINGS
+from app.control.model.enums import ModeId
 from app.dataplane.reverse.protocol.xai_chat_reasoning import ReasoningAggregator
 
 
@@ -49,7 +50,7 @@ def build_chat_payload(
         "imageGenerationCount":        2,
         "isAsyncChat":                 False,
         "message":                     message,
-        "modeId":                      MODE_STRINGS[mode_id],
+        "modeId":                      mode_id.to_api_str(),
         "responseMetadata":            {},
         "returnImageBytes":            False,
         "returnRawGrokInXaiRequest":   False,
@@ -77,7 +78,7 @@ def build_chat_payload(
 
     logger.debug(
         "chat payload built: mode={} message_len={} file_count={}",
-        MODE_STRINGS[mode_id], len(message), len(file_attachments),
+        mode_id.to_api_str(), len(message), len(file_attachments),
     )
     return payload
 
@@ -113,6 +114,46 @@ def classify_line(line: str | bytes) -> tuple[str, str]:
     return "skip", ""
 
 
+def stream_error_from_payload(obj: dict[str, Any]) -> UpstreamError | None:
+    """Convert upstream in-band stream error payloads to retryable errors."""
+    error = obj.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    raw_message = error.get("message") or error.get("error") or "Upstream stream error"
+    message = str(raw_message)
+    code = error.get("code")
+    text = message.lower()
+    status = 429 if code == 8 or "too many requests" in text or "rate limit" in text else 502
+
+    try:
+        body = orjson.dumps(obj).decode()
+    except (TypeError, ValueError):
+        body = str(obj)
+
+    return UpstreamError(
+        f"Upstream stream error: {message}",
+        status=status,
+        body=body[:400],
+    )
+
+
+def raise_for_stream_error(data: str | bytes | dict[str, Any]) -> None:
+    """Raise :class:`UpstreamError` for raw or decoded in-band stream errors."""
+    if isinstance(data, dict):
+        obj = data
+    else:
+        try:
+            obj = orjson.loads(data)
+        except (orjson.JSONDecodeError, ValueError, TypeError):
+            return
+    if not isinstance(obj, dict):
+        return
+    exc = stream_error_from_payload(obj)
+    if exc is not None:
+        raise exc
+
+
 # ---------------------------------------------------------------------------
 # FrameEvent — single output event from StreamAdapter.feed()
 # ---------------------------------------------------------------------------
@@ -127,6 +168,7 @@ class FrameEvent:
     - ``thinking``  — Grok main-model thinking   (content = raw token)
     - ``image``     — generated image final URL   (content = full URL, image_id = upstream UUID)
     - ``image_progress`` — generated image progress (content = percent string, image_id = upstream UUID)
+    - ``annotation`` — url citation annotation   (annotation_data = annotation dict)
     - ``soft_stop`` — stream end signal
     - ``skip``      — filtered frame, do nothing
     """
@@ -135,6 +177,7 @@ class FrameEvent:
     rollout_id: str = ""
     message_tag: str = ""
     message_step_id: int | None = None
+    annotation_data: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +219,16 @@ class StreamAdapter:
         "_citation_order",
         "_citation_map",
         "_last_citation_index",
+        "_pending_citations",
+        "_annotations",
+        "_text_offset",
         "_emitted_reasoning_keys",
         "_reasoning",
         "_summary_mode",
         "_last_rollout",
         "_content_started",
+        "_web_search_results",
+        "_web_search_urls_seen",
         "thinking_buf",
         "text_buf",
         "image_urls",
@@ -191,20 +239,56 @@ class StreamAdapter:
         self._citation_order: list[str] = []
         self._citation_map: dict[str, int] = {}
         self._last_citation_index: int = -1
+        self._pending_citations: list[dict] = []       # _render_replace 产出的待定位引用
+        self._annotations: list[dict] = []             # 已定位的完整 annotations（绝对位置）
+        self._text_offset: int = 0                     # 累计文本长度（仅 text 事件）
         self._emitted_reasoning_keys: set[str] = set()
         # 思维链模式：精简摘要 / 详细原始流
         self._summary_mode: bool = get_config().get_bool("features.thinking_summary", False)
         self._last_rollout: str = ""
         self._content_started: bool = False
         self._reasoning = ReasoningAggregator() if self._summary_mode else None
+        self._web_search_results: list[dict] = []
+        self._web_search_urls_seen: set[str] = set()
         self.thinking_buf: list[str] = []
         self.text_buf: list[str] = []
         self.image_urls: list[tuple[str, str]] = []   # [(url, imageUuid), ...]
 
-    # 引用已内联为 [[N]](url) 格式，无需末尾附录
+    # 搜索信源追加：当配置启用且有 webSearchResults 时，格式化为 ## Sources 段落
+    # 标记行 [grok2api-sources]: # 是 markdown link reference definition，渲染器不显示，
+    # 用于 _extract_message() 在多轮对话中精确识别并剥离前轮的 Sources 段落
     def references_suffix(self) -> str:
-        """No-op — citations are now inlined as ``[[N]](url)`` markdown links."""
-        return ""
+        """当有搜索信源且配置启用时，格式化为 ## Sources markdown 段落。"""
+        if not self._web_search_results:
+            return ""
+        if not get_config().get_bool("features.show_search_sources", False):
+            return ""
+        lines = ["\n\n## Sources", "[grok2api-sources]: #"]
+        for item in self._web_search_results:
+            title = item.get("title") or item.get("url", "")
+            # 转义 Markdown 链接文本中的特殊字符，防止 []\ 打坏语法
+            title = title.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+            lines.append(f"- [{title}]({item['url']})")
+        return "\n".join(lines) + "\n"
+
+    # 内联引用 annotations：生成时同步构建，含绝对位置
+    def annotations_list(self) -> list[dict]:
+        """已收集的 url_citation annotations（扁平格式，绝对位置）。无引用时返回 []。"""
+        return list(self._annotations)
+
+    # 结构化搜索信源：始终输出（不受配置开关控制），供 search_sources 字段使用
+    def search_sources_list(self) -> list[dict] | None:
+        """当有搜索信源时，返回结构化列表；无则返回 None。"""
+        if not self._web_search_results:
+            return None
+        return [
+            {
+                "url": item["url"],
+                "title": item.get("title") or item.get("url", ""),
+                "type": item.get("type", "web"),
+            }
+            for item in self._web_search_results
+        ]
 
     # ------------------------------------------------------------------
     # Public API
@@ -216,6 +300,7 @@ class StreamAdapter:
             obj = orjson.loads(data)
         except (orjson.JSONDecodeError, ValueError, TypeError):
             return []
+        raise_for_stream_error(obj)
 
         result = obj.get("result")
         if not result:
@@ -230,6 +315,33 @@ class StreamAdapter:
         card_raw = resp.get("cardAttachment")
         if card_raw:
             events.extend(self._handle_card(card_raw))
+
+        # ── 采集 webSearchResults（搜索信源，多帧累积去重）───────
+        wsr = resp.get("webSearchResults")
+        if wsr and isinstance(wsr, dict):
+            for item in wsr.get("results", []):
+                if isinstance(item, dict) and item.get("url"):
+                    url = item["url"]
+                    if url not in self._web_search_urls_seen:
+                        self._web_search_urls_seen.add(url)
+                        self._web_search_results.append({**item, "type": "web"})
+
+        # ── 采集 xSearchResults（X/Twitter 帖子信源，多帧累积去重）──
+        xsr = resp.get("xSearchResults")
+        if xsr and isinstance(xsr, dict):
+            for item in xsr.get("results", []):
+                if isinstance(item, dict) and item.get("postId") and item.get("username"):
+                    url = f"https://x.com/{item['username']}/status/{item['postId']}"
+                    if url not in self._web_search_urls_seen:
+                        self._web_search_urls_seen.add(url)
+                        # 构造 title：归一化空白，text 为空退回 @username
+                        # Markdown 转义统一在 references_suffix() 中处理
+                        raw = re.sub(r"\s+", " ", (item.get("text") or "")).strip()
+                        if raw:
+                            title = f"𝕏/@{item['username']}: {raw[:50]}{'...' if len(raw) > 50 else ''}"
+                        else:
+                            title = f"𝕏/@{item['username']}"
+                        self._web_search_results.append({"url": url, "title": title, "type": "x_post"})
 
         token   = resp.get("token")
         think   = resp.get("isThinking")
@@ -316,10 +428,18 @@ class StreamAdapter:
         # ── final text token (needs cleaning) ─────────────────────
         if token is not None and think is not True and tag == "final":
             self._content_started = True
-            cleaned = self._clean_token(token)
+            cleaned, local_anns = self._clean_token(token)
             if cleaned:
+                # 先发 text 事件（OpenAI 顺序：text.delta 先，annotation.added 后）
                 self.text_buf.append(cleaned)
                 events.append(FrameEvent("text", cleaned))
+                # 再发 annotation 事件：局部位置 → 绝对位置
+                for ann in local_anns:
+                    ann["start_index"] = self._text_offset + ann.pop("local_start")
+                    ann["end_index"] = self._text_offset + ann.pop("local_end")
+                    self._annotations.append(ann)
+                    events.append(FrameEvent("annotation", annotation_data=ann))
+                self._text_offset += len(cleaned)
             return events
 
         # ── end signals ───────────────────────────────────────────
@@ -371,12 +491,32 @@ class StreamAdapter:
     # Token cleaning — <grok:render> → markdown
     # ------------------------------------------------------------------
 
-    def _clean_token(self, token: str) -> str:
+    # 返回 (cleaned_text, local_annotations)，annotations 含局部 start/end
+    def _clean_token(self, token: str) -> tuple[str, list[dict]]:
         if "<grok:render" not in token:
-            return token
+            return token, []
         cleaned = _GROK_RENDER_RE.sub(self._render_replace, token)
         # 去除引用标签替换后残留的独占空白行（如 "\n [[1]](...)" → " [[1]](...)"）
-        return cleaned.lstrip("\n") if cleaned.startswith("\n") and "[[" in cleaned else cleaned
+        cleaned = cleaned.lstrip("\n") if cleaned.startswith("\n") and "[[" in cleaned else cleaned
+
+        # 从 cleaned 中定位 pending citations 的局部位置（游标递进防碰撞）
+        local_annotations: list[dict] = []
+        if self._pending_citations:
+            search_start = 0
+            for cite in self._pending_citations:
+                pos = cleaned.find(cite["needle"], search_start)
+                if pos != -1:
+                    local_annotations.append({
+                        "type": "url_citation",
+                        "url": cite["url"],
+                        "title": cite["title"],
+                        "local_start": pos,
+                        "local_end": pos + len(cite["needle"]),
+                    })
+                    search_start = pos + len(cite["needle"])
+                # 找不到 → fail closed，跳过此 annotation
+            self._pending_citations.clear()
+        return cleaned, local_annotations
 
     def _render_replace(self, m: re.Match) -> str:
         card_id     = m.group(1)
@@ -410,7 +550,22 @@ class StreamAdapter:
             if index == self._last_citation_index:
                 return ""
             self._last_citation_index = index
-            return f" [[{index}]]({url})"
+            citation_text = f" [[{index}]]({url})"
+            # 解析标题：card → webSearchResults → URL fallback
+            # Grok citation card 仅含 [id, type, cardType, url]，无 title 字段
+            title = card.get("title", "")
+            if not title:
+                for item in self._web_search_results:
+                    if item.get("url") == url:
+                        title = item.get("title", "")
+                        break
+            # 记录引用元数据，位置在 _clean_token 返回后定位
+            self._pending_citations.append({
+                "url": url,
+                "title": title or url,
+                "needle": citation_text,
+            })
+            return citation_text
 
         return ""
 

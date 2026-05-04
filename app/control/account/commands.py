@@ -36,6 +36,7 @@ class AccountPatch(BaseModel):
     quota_fast:       dict[str, Any] | None  = None
     quota_expert:     dict[str, Any] | None  = None
     quota_heavy:      dict[str, Any] | None  = None
+    quota_grok_4_3:   dict[str, Any] | None  = None
     # Usage counters — delta values (added to existing counts).
     usage_use_delta:  int | None             = None
     usage_fail_delta: int | None             = None

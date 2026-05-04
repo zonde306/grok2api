@@ -32,9 +32,10 @@ from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
 async def fetch_livekit_token(
     token:       str,
     *,
-    voice:       str   = "ara",
-    personality: str   = "assistant",
-    speed:       float = 1.0,
+    voice:              str   = "ara",
+    personality:        str   = "assistant",
+    speed:              float = 1.0,
+    custom_instruction: str   = "",
 ) -> Dict[str, Any]:
     """Fetch a LiveKit session token for *token*.
 
@@ -48,9 +49,10 @@ async def fetch_livekit_token(
     lease = await proxy.acquire(scope=ProxyScope.APP, kind=RequestKind.HTTP)
 
     payload = build_token_request_payload(
-        voice       = voice,
-        personality = personality,
-        speed       = speed,
+        voice              = voice,
+        personality        = personality,
+        speed              = speed,
+        custom_instruction = custom_instruction,
     )
 
     try:

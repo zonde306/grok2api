@@ -2,9 +2,9 @@
 
 import asyncio
 import json
-import re
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
@@ -15,18 +15,6 @@ def _extract_all_cookies(cookies: list[dict]) -> str:
     return "; ".join(f"{c.get('name')}={c.get('value')}" for c in cookies)
 
 
-def _extract_cookie_value(cookies: list[dict], name: str) -> str:
-    for c in cookies:
-        if c.get("name") == name:
-            return c.get("value") or ""
-    return ""
-
-
-def _browser_profile(user_agent: str) -> str:
-    m = re.search(r"Chrome/(\d+)", user_agent)
-    return f"chrome{m.group(1)}" if m else "chrome120"
-
-
 class FlareSolverrClearanceProvider:
     """Refresh CF clearance bundles via a FlareSolverr instance."""
 
@@ -35,6 +23,7 @@ class FlareSolverrClearanceProvider:
         *,
         affinity_key: str,
         proxy_url:    str,
+        target_url:   str = "https://grok.com",
     ) -> ClearanceBundle | None:
         cfg = get_config()
         mode = ClearanceMode.parse(cfg.get_str("proxy.clearance.mode", "none"))
@@ -49,19 +38,22 @@ class FlareSolverrClearanceProvider:
             fs_url      = fs_url,
             proxy_url   = proxy_url,
             timeout_sec = timeout_sec,
+            target_url  = target_url,
         )
         if not result:
             logger.warning(
-                "flaresolverr clearance refresh failed: affinity={} proxy={}",
-                affinity_key, proxy_url or "<direct>",
+                "flaresolverr clearance refresh failed: affinity={} proxy={} target={}",
+                affinity_key, proxy_url or "<direct>", target_url,
             )
             return None
+        host = result.get("clearance_host", "grok.com")
 
         return ClearanceBundle(
-            bundle_id    = f"flaresolverr:{affinity_key}",
+            bundle_id    = f"flaresolverr:{affinity_key}@{host}",
             cf_cookies   = result.get("cookies", ""),
             user_agent   = result.get("user_agent", ""),
             affinity_key = affinity_key,
+            clearance_host = host,
         )
 
     async def _solve(
@@ -70,10 +62,12 @@ class FlareSolverrClearanceProvider:
         fs_url:      str,
         proxy_url:   str,
         timeout_sec: int,
+        target_url:  str,
     ) -> dict[str, str] | None:
+        target = target_url.strip() or "https://grok.com"
         payload: dict = {
             "cmd":        "request.get",
-            "url":        "https://grok.com",
+            "url":        target,
             "maxTimeout": timeout_sec * 1000,
         }
         if proxy_url:
@@ -107,10 +101,16 @@ class FlareSolverrClearanceProvider:
                 return None
 
             ua = solution.get("userAgent", "") or ""
+            host = (urlparse(target).hostname or "").lower()
+            filtered = [
+                cookie for cookie in cookies
+                if not host or not cookie.get("domain") or host.endswith(str(cookie.get("domain", "")).lstrip(".").lower())
+            ]
+            chosen = filtered or cookies
             return {
-                "cookies":    _extract_all_cookies(cookies),
+                "cookies":    _extract_all_cookies(chosen),
                 "user_agent": ua,
-                "browser":    _browser_profile(ua),
+                "clearance_host": host or "grok.com",
             }
 
         except HTTPError as exc:

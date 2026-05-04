@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.control.proxy.models import ProxyLease
+from app.dataplane.proxy.adapters.profile import ProxyProfile, resolve_proxy_profile
 
 # ---------------------------------------------------------------------------
 # Unicode → ASCII normalisation map
@@ -159,27 +160,8 @@ def _client_hints(browser: Optional[str], ua: Optional[str]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_profile(lease: ProxyLease | None) -> tuple[str, str]:
-    """Return (cf_cookies, user_agent) from lease or config.
-
-    Field-level fallback: if the lease exists but a field is empty (e.g. no
-    clearance bundle yet), the config default is used rather than returning an
-    empty string.  This prevents bare requests with no User-Agent when running
-    in direct mode or when FlareSolverr has not yet delivered a bundle.
-    """
-    cfg = get_config()
-    cfg_cookies = cfg.get_str("proxy.clearance.cf_cookies", "")
-    cfg_ua      = cfg.get_str("proxy.clearance.user_agent", "")
-    if lease is not None:
-        return (lease.cf_cookies or cfg_cookies, lease.user_agent or cfg_ua)
-    return (cfg_cookies, cfg_ua)
-
-
-def _resolve_browser(lease: ProxyLease | None) -> str:
-    if lease is not None and lease.user_agent:
-        m = re.search(r"Chrome/(\d+)", lease.user_agent)
-        return f"chrome{m.group(1)}" if m else "chrome120"
-    return get_config().get_str("proxy.clearance.browser", "chrome120")
+def _resolve_profile(lease: ProxyLease | None) -> ProxyProfile:
+    return resolve_proxy_profile(lease)
 
 
 # ---------------------------------------------------------------------------
@@ -194,17 +176,25 @@ def build_sso_cookie(
     cf_cookies: str | None = None,
     cf_clearance: str | None = None,
 ) -> str:
-    """Build the Cookie header value for an SSO-authenticated request."""
+    """Build the Cookie header value for an SSO-authenticated request.
+
+    When *cf_clearance* is not provided, the value is resolved from the lease's
+    cf_cookies profile or falls back to the config's cf_clearance (supporting
+    both ``proxy.clearance.cf_clearance`` and legacy ``proxy.cf_clearance`` paths).
+    Historical bug: earlier v2.0 releases silently defaulted cf_clearance to the
+    empty string when not passed explicitly, causing Cookies without a CF
+    clearance token and immediate 403 from Cloudflare on every grok.com call.
+    """
     tok = sso_token[4:] if sso_token.startswith("sso=") else sso_token
     tok = _sanitize(tok, field="sso_token", strip_spaces=True)
 
     cookie = f"sso={tok}; sso-rw={tok}"
-    profile_cookies, _ = _resolve_profile(lease)
+    profile = _resolve_profile(lease)
     eff_cookies = _sanitize(
-        cf_cookies if cf_cookies is not None else profile_cookies, field="cf_cookies"
+        cf_cookies if cf_cookies is not None else profile.cf_cookies, field="cf_cookies"
     )
     eff_clearance = _sanitize(
-        cf_clearance if cf_clearance is not None else "",
+        cf_clearance if cf_clearance is not None else profile.cf_clearance,
         field="cf_clearance",
         strip_spaces=True,
     )
@@ -236,9 +226,10 @@ def build_http_headers(
     lease: ProxyLease | None = None,
 ) -> dict[str, str]:
     """Build headers for a standard HTTP reverse-proxy request."""
-    _, raw_ua = _resolve_profile(lease)
+    profile = _resolve_profile(lease)
+    raw_ua = profile.user_agent
     ua = _sanitize(raw_ua, field="user_agent")
-    browser = _resolve_browser(lease)
+    browser = profile.browser
     org = _sanitize(origin or "https://grok.com", field="origin")
     ref = _sanitize(referer or "https://grok.com/", field="referer")
 
@@ -295,9 +286,10 @@ def build_ws_headers(
     lease: ProxyLease | None = None,
 ) -> dict[str, str]:
     """Build headers for a WebSocket upgrade request."""
-    _, raw_ua = _resolve_profile(lease)
+    profile = _resolve_profile(lease)
+    raw_ua = profile.user_agent
     ua = _sanitize(raw_ua, field="user_agent")
-    browser = _resolve_browser(lease)
+    browser = profile.browser
     org = _sanitize(origin or "https://grok.com", field="origin")
 
     headers: dict[str, str] = {

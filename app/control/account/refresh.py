@@ -9,12 +9,13 @@ from app.platform.config.snapshot import get_config
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_ms
 from app.platform.runtime.batch import run_batch
-from app.control.model.enums import ALL_MODES_WITH_HEAVY
+from app.control.model.enums import ALL_MODES_FULL
 from .enums import AccountStatus, QuotaSource
 from .models import AccountRecord, QuotaWindow
 from .quota_defaults import (
     default_quota_window,
     infer_pool,
+    normalize_quota_window,
     supported_mode_ids,
     supports_mode,
 )
@@ -49,6 +50,7 @@ _MODE_KEYS = {
     1: "quota_fast",
     2: "quota_expert",
     3: "quota_heavy",
+    4: "quota_grok_4_3",
 }
 
 
@@ -56,9 +58,9 @@ class AccountRefreshService:
     """Fetches real quota data from the upstream usage API and persists it.
 
     Triggers:
-      1. Import   — super accounts: fetch all 3 modes.
-      2. Call     — super accounts: fetch the called mode (async, non-blocking).
-      3. Schedule — super: fetch all 3 modes; basic: static window reset check.
+      1. Import   — fetch all modes supported by the account's pool.
+      2. Call     — fetch the called mode only (async, non-blocking).
+      3. Schedule — refresh one pool per loop using that pool's supported modes.
     """
 
     def __init__(self, repository: "AccountRepository") -> None:
@@ -74,7 +76,13 @@ class AccountRefreshService:
     async def _fetch_all_quotas(
         self, token: str, pool: str
     ) -> dict[int, QuotaWindow] | None:
-        """Fetch quota windows for modes supported by *pool*. Returns {mode_id: window}."""
+        """Fetch quota windows for every mode supported by *pool*.
+
+        Examples:
+          - basic -> fast
+          - super -> auto / fast / expert / grok_4_3
+          - heavy -> auto / fast / expert / heavy / grok_4_3
+        """
         try:
             from app.dataplane.reverse.protocol.xai_usage import fetch_all_quotas
 
@@ -141,7 +149,7 @@ class AccountRefreshService:
         return agg
 
     async def refresh_call_async(self, token: str, mode_id: int) -> None:
-        """Fire-and-forget quota sync after a successful call (all accounts)."""
+        """Fire-and-forget single-mode quota sync after a successful call."""
         record = (await self._repo.get_accounts([token]) or [None])[0]
         if record is None or record.is_deleted():
             return
@@ -218,7 +226,7 @@ class AccountRefreshService:
         *,
         apply_fallback: bool = False,
     ) -> RefreshResult:
-        """Fetch all 3 modes from the usage API and persist real quota data.
+        """Fetch all pool-supported modes from the usage API and persist them.
 
         apply_fallback=True  — used by scheduled/import paths: when API fails,
                                decrement REAL quotas or reset expired DEFAULT windows.
@@ -248,10 +256,13 @@ class AccountRefreshService:
         patches: dict[str, dict] = {}
         refreshed = False
 
-        for mode in ALL_MODES_WITH_HEAVY:
+        for mode in ALL_MODES_FULL:
             mode_id = int(mode)
             if mode_id in windows:
-                patches[_MODE_KEYS[mode_id]] = windows[mode_id].to_dict()
+                window = normalize_quota_window(record.pool, mode_id, windows[mode_id])
+                if window is None:
+                    continue
+                patches[_MODE_KEYS[mode_id]] = window.to_dict()
                 refreshed = True
             elif apply_fallback:
                 existing = qs.get(mode_id)
@@ -320,7 +331,7 @@ class AccountRefreshService:
         now = now_ms()
         patches: dict[str, dict] = {}
 
-        for mode in ALL_MODES_WITH_HEAVY:
+        for mode in ALL_MODES_FULL:
             mode_id = int(mode)
             existing = qs.get(mode_id)
             if existing is None:
@@ -369,6 +380,40 @@ class AccountRefreshService:
                     record, exc
                 ):
                     return
+                if (
+                    record is not None
+                    and getattr(exc, "status", None) == 429
+                    and mode_id in _MODE_KEYS
+                ):
+                    now = now_ms()
+                    quota_patch: dict[str, dict] = {}
+                    window = record.quota_set().get(mode_id)
+                    if window is not None:
+                        reset_at = (
+                            window.reset_at
+                            if window.reset_at is not None and window.reset_at > now
+                            else now + max(window.window_seconds, 1) * 1000
+                        )
+                        quota_patch[_MODE_KEYS[mode_id]] = QuotaWindow(
+                            remaining=0,
+                            total=window.total,
+                            window_seconds=window.window_seconds,
+                            reset_at=reset_at,
+                            synced_at=window.synced_at,
+                            source=QuotaSource.ESTIMATED,
+                        ).to_dict()
+                    await self._repo.patch_accounts(
+                        [
+                            AccountPatch(
+                                token=token,
+                                usage_fail_delta=1,
+                                last_fail_at=now,
+                                last_fail_reason="rate_limited",
+                                **quota_patch,
+                            )
+                        ]
+                    )
+                    return
             await self._repo.patch_accounts(
                 [
                     AccountPatch(
@@ -407,7 +452,16 @@ class AccountRefreshService:
 
         quota_patch: dict[str, dict] = {}
         if window is not None:
-            quota_patch[mode_key] = window.to_dict()
+            normalized = normalize_quota_window(record.pool, mode_id, window)
+            if normalized is None:
+                logger.debug(
+                    "account single-mode quota patch skipped: token={}... pool={} mode_id={} reason=unsupported_mode",
+                    record.token[:10],
+                    record.pool,
+                    mode_id,
+                )
+                return
+            quota_patch[mode_key] = normalized.to_dict()
         else:
             existing = qs.get(mode_id)
             if existing is not None:

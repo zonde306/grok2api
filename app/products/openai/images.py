@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Awaitable, Callable
+from urllib.parse import urlparse
 
 import orjson
 
@@ -15,7 +16,7 @@ from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError, ValidationError
 from app.platform.runtime.clock import now_s
-from app.platform.storage import image_files_dir
+from app.platform.storage import save_local_image
 from app.control.model.registry import resolve as resolve_model
 from app.control.model.enums import ModeId
 from app.control.model.spec import ModelSpec
@@ -25,10 +26,10 @@ from app.dataplane.reverse.protocol.xai_chat import (
     StreamAdapter,
     build_chat_payload,
     classify_line,
+    raise_for_stream_error,
 )
 from app.dataplane.reverse.protocol.xai_assets import infer_content_type, resolve_asset_reference, resolve_download_url
 from app.dataplane.reverse.protocol.xai_image_edit import (
-    IMAGE_EDIT_GENERATION_COUNT,
     IMAGE_POST_MEDIA_TYPE,
     build_image_edit_payload,
     extract_model_response_file_attachments,
@@ -51,7 +52,15 @@ from ._format import (
     make_stream_chunk,
     make_thinking_chunk,
 )
-from .chat import _quota_sync, _fail_sync, _feedback_kind
+from .chat import (
+    _configured_retry_codes,
+    _fail_sync,
+    _feedback_kind,
+    _log_task_exception,
+    _quota_sync,
+    _should_retry_upstream,
+)
+from app.products._account_selection import selection_max_retries
 
 _X_USER_ID_RE = re.compile(r"(?:^|;\s*)x-userid=([^;]+)")
 
@@ -97,6 +106,21 @@ def _progress_reason(label: str, progress: int, *, completed: int | None = None,
     if completed is not None and total is not None and total > 0:
         reason += f" ({completed}/{total})"
     return reason
+
+
+def _progress_reason_delta(
+    label: str,
+    progress: int,
+    *,
+    completed: int | None = None,
+    total: int | None = None,
+) -> str:
+    return _progress_reason(
+        label,
+        progress,
+        completed=completed,
+        total=total,
+    ) + "\n"
 
 
 def _append_reason_update(
@@ -164,13 +188,16 @@ def _extract_image_file_id(url: str) -> str:
     return hashlib.sha1(url.encode("utf-8")).hexdigest()[:32]
 
 
+def _is_imagine_public_url(url: str) -> bool:
+    try:
+        host = urlparse(url or "").hostname or ""
+    except Exception:
+        return False
+    return host.startswith("imagine-public")
+
+
 def _save_image(raw: bytes, mime: str, file_id: str) -> str:
-    img_dir = image_files_dir()
-    ext = ".png" if "png" in mime else ".jpg"
-    path = img_dir / f"{file_id}{ext}"
-    if not path.exists():
-        path.write_bytes(raw)
-    return file_id
+    return save_local_image(raw, mime, file_id)
 
 
 async def _download_image_bytes(token: str, url: str) -> tuple[bytes, str]:
@@ -194,6 +221,13 @@ async def _resolve_image_output(
     blob_b64: str | None = None,
 ) -> _ImageOutput:
     fmt = _normalize_response_format(response_format)
+    cfg = get_config()
+    if (
+        fmt == "url"
+        and _is_imagine_public_url(url)
+        and not cfg.get_bool("features.imagine_public_image_proxy", False)
+    ):
+        return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
     if fmt == "url" and not _app_url():
         return _ImageOutput(api_value=url, markdown_value=f"![image]({url})")
 
@@ -211,7 +245,12 @@ async def _resolve_image_output(
         data_uri = f"data:{mime};base64,{b64}"
         return _ImageOutput(api_value=b64, markdown_value=f"![image]({data_uri})")
 
-    file_id = _save_image(raw, mime, _extract_image_file_id(url))
+    file_id = await asyncio.to_thread(
+        _save_image,
+        raw,
+        mime,
+        _extract_image_file_id(url),
+    )
     local_url = _local_image_url(file_id)
     return _ImageOutput(api_value=local_url, markdown_value=f"![image]({local_url})")
 
@@ -243,7 +282,7 @@ async def generate(
     """Generate images.
 
     Routes to the appropriate backend based on model:
-      grok-imagine-image-lite  → chat endpoint (no aspect-ratio control, all pools)
+      grok-imagine-image-lite  → chat endpoint (fast quota, no aspect-ratio control)
       grok-imagine-image       → WebSocket speed mode (super+)
       grok-imagine-image-pro   → WebSocket quality mode (super+)
 
@@ -271,10 +310,9 @@ async def generate(
             chat_format     = chat_format,
         )
 
-    acct = await _acct_dir.reserve(
-        pool_candidates = spec.pool_candidates(),
-        mode_id         = int(spec.mode_id),
-        now_s_override  = now_s(),
+    acct = await _acct_dir.reserve_any(
+        spec.pool_candidates(),
+        now_s_override=now_s(),
     )
     if acct is None:
         raise RateLimitError("No available accounts for image generation")
@@ -282,6 +320,7 @@ async def generate(
     token       = acct.token
     response_id = make_response_id()
     enable_pro  = model in _PRO_IMAGE_MODELS
+    _ws_mode_id = int(spec.mode_id)
 
     if stream:
         async def _sse_stream() -> AsyncGenerator[str, None]:
@@ -316,7 +355,7 @@ async def generate(
                                 completed=len(completed_ids),
                                 total=n,
                             )
-                            chunk = make_thinking_chunk(response_id, model, reason)
+                            chunk = make_thinking_chunk(response_id, model, reason + "\n")
                             yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                         continue
                     if not ev.get("is_final"):
@@ -328,7 +367,7 @@ async def generate(
                     if chat_format and aggregate > last_progress:
                         last_progress = aggregate
                         reason = _progress_reason("图片", aggregate, completed=len(completed_ids), total=n)
-                        chunk = make_thinking_chunk(response_id, model, reason)
+                        chunk = make_thinking_chunk(response_id, model, reason + "\n")
                         yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                     image = await _resolve_image_output(
                         token=token,
@@ -349,12 +388,12 @@ async def generate(
                 raise
             finally:
                 await _acct_dir.release(acct)
-                kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-                await _acct_dir.feedback(token, kind, int(spec.mode_id))
-                if success:
-                    asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-                else:
-                    asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+                # WS image gen has its own upstream rate limiting — skip quota tracking.
+                # Still propagate auth failures so bad accounts get marked expired.
+                if not success and fail_exc is not None:
+                    kind = _feedback_kind(fail_exc)
+                    if kind in (FeedbackKind.UNAUTHORIZED, FeedbackKind.FORBIDDEN):
+                        await _acct_dir.feedback(token, kind, _ws_mode_id)
 
         return _sse_stream()
 
@@ -416,12 +455,11 @@ async def generate(
         raise
     finally:
         await _acct_dir.release(acct)
-        kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-        await _acct_dir.feedback(token, kind, int(spec.mode_id))
-        if success:
-            asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-        else:
-            asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+        # WS image gen has its own upstream rate limiting — skip quota tracking.
+        if not success and fail_exc is not None:
+            kind = _feedback_kind(fail_exc)
+            if kind in (FeedbackKind.UNAUTHORIZED, FeedbackKind.FORBIDDEN):
+                await _acct_dir.feedback(token, kind, _ws_mode_id)
 
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in finals)
@@ -458,8 +496,7 @@ async def _generate_lite(
 ) -> dict | AsyncGenerator[str, None]:
     """Generate images via the chat endpoint (Aurora model path).
 
-    Does not support aspect ratio or quality control.  All account pools
-    can serve this model.
+    Does not support aspect ratio or quality control.  It uses fast quota.
     """
     response_id = make_response_id()
     cfg         = get_config()
@@ -500,7 +537,12 @@ async def _generate_lite(
                     chunk = make_thinking_chunk(
                         response_id,
                         spec.model_name,
-                        _progress_reason("图片", aggregate, completed=completed, total=n),
+                        _progress_reason_delta(
+                            "图片",
+                            aggregate,
+                            completed=completed,
+                            total=n,
+                        ),
                     )
                     yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
@@ -562,10 +604,17 @@ async def _generate_lite(
 # Image editing
 # ---------------------------------------------------------------------------
 
-_EDIT_MAX_REFERENCES = 5
+_EDIT_MAX_REFERENCES = 7
 _EDIT_DEFAULT_SIZE = "1024x1024"
 _EDIT_MAX_N = 2
 _EDIT_MAX_ATTEMPTS = 2
+_EDIT_IMAGE_PLACEHOLDER_RE = re.compile(r"@IMAGE(\d+)\b", re.IGNORECASE)
+
+
+@dataclass(slots=True)
+class _EditReference:
+    file_id: str
+    content_url: str
 
 
 def _normalize_edit_inputs(image_inputs: list[str]) -> list[str]:
@@ -587,11 +636,16 @@ def _normalize_edit_size(size: str) -> str:
     return _EDIT_DEFAULT_SIZE
 
 
-async def _prepare_edit_reference(token: str, image_input: str, index: int) -> str:
+async def _prepare_edit_reference(
+    token: str, image_input: str, index: int
+) -> _EditReference:
     """Upload one edit reference and resolve it to the upstream content URL."""
     try:
         file_id, file_uri = await upload_from_input(token, image_input)
-        return resolve_uploaded_asset_reference(token, file_id, file_uri)
+        return _EditReference(
+            file_id=file_id,
+            content_url=resolve_uploaded_asset_reference(token, file_id, file_uri),
+        )
     except ValidationError as exc:
         raise ValidationError(exc.message, param=f"image.{index}") from exc
     except UpstreamError as exc:
@@ -604,9 +658,11 @@ async def _prepare_edit_reference(token: str, image_input: str, index: int) -> s
         raise UpstreamError(f"Image edit reference {index + 1} upload failed: {exc}") from exc
 
 
-async def _prepare_edit_references(token: str, image_inputs: list[str]) -> list[str]:
+async def _prepare_edit_references(
+    token: str, image_inputs: list[str]
+) -> list[_EditReference]:
     """Upload edit references concurrently and preserve caller order."""
-    results: list[str | None] = [None] * len(image_inputs)
+    results: list[_EditReference | None] = [None] * len(image_inputs)
 
     async def _runner(index: int, image_input: str) -> None:
         results[index] = await _prepare_edit_reference(token, image_input, index)
@@ -616,6 +672,20 @@ async def _prepare_edit_references(token: str, image_inputs: list[str]) -> list[
             tg.create_task(_runner(index, image_input), name=f"image-edit-ref-{index}")
 
     return [result for result in results if result is not None]
+
+
+def _replace_edit_image_placeholders(
+    prompt: str, references: list[_EditReference]
+) -> str:
+    """Replace @IMAGE1-style placeholders with uploaded asset IDs."""
+
+    def _replace(match: re.Match[str]) -> str:
+        image_number = int(match.group(1))
+        if image_number < 1 or image_number > len(references):
+            return match.group(0)
+        return f"@{references[image_number - 1].file_id}"
+
+    return _EDIT_IMAGE_PLACEHOLDER_RE.sub(_replace, prompt)
 
 
 def _extract_edit_prompt_and_inputs(messages: list[dict]) -> tuple[str, list[str]]:
@@ -750,6 +820,7 @@ async def _collect_edit_final_urls(
             obj = orjson.loads(data)
         except Exception:
             continue
+        raise_for_stream_error(obj)
         stream = extract_streaming_response(obj)
         if stream and progress_cb is not None:
             index = _parse_image_index(stream.get("imageIndex"))
@@ -912,59 +983,96 @@ async def _run_lite_request(
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
 
-    acct = await _acct_dir.reserve(
-        pool_candidates = spec.pool_candidates(),
-        mode_id         = int(spec.mode_id),
-        now_s_override  = now_s(),
-    )
-    if acct is None:
-        raise RateLimitError("No available accounts for image generation")
+    max_retries = selection_max_retries()
+    retry_codes = _configured_retry_codes(get_config())
+    excluded: list[str] = []
 
-    token   = acct.token
-    adapter = StreamAdapter()
-    success = False
-    fail_exc: BaseException | None = None
-    try:
-        async for line in _stream_lite_generate(
-            token,
-            prompt,
-            spec.mode_id,
-            timeout_s=timeout_s,
-        ):
-            ev_type, data = classify_line(line)
-            if ev_type == "done":
-                break
-            if ev_type != "data" or not data:
-                continue
-            for ev in adapter.feed(data):
-                if ev.kind == "image_progress":
-                    if progress_cb is not None:
-                        try:
-                            await progress_cb(_clamp_progress(int(ev.content or "0")))
-                        except ValueError:
-                            pass
-                if ev.kind == "image" and ev.content:
-                    if progress_cb is not None:
-                        await progress_cb(100)
-                    image = await _resolve_image_output(
-                        token=token,
-                        url=ev.content,
-                        response_format=response_format,
-                    )
-                    success = True
-                    return image
-        raise UpstreamError("Image generation returned no images")
-    except BaseException as exc:
-        fail_exc = exc
-        raise
-    finally:
-        await _acct_dir.release(acct)
-        kind = FeedbackKind.SUCCESS if success else _feedback_kind(fail_exc) if fail_exc else FeedbackKind.SERVER_ERROR
-        await _acct_dir.feedback(token, kind, int(spec.mode_id))
-        if success:
-            asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-        else:
-            asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+    for attempt in range(max_retries + 1):
+        acct = await _acct_dir.reserve(
+            pool_candidates=spec.pool_candidates(),
+            mode_id=int(spec.mode_id),
+            now_s_override=now_s(),
+            exclude_tokens=excluded or None,
+        )
+        if acct is None:
+            raise RateLimitError("No available accounts for image generation")
+
+        token = acct.token
+        adapter = StreamAdapter()
+        success = False
+        retry = False
+        fail_exc: BaseException | None = None
+
+        try:
+            async for line in _stream_lite_generate(
+                token,
+                prompt,
+                spec.mode_id,
+                timeout_s=timeout_s,
+            ):
+                ev_type, data = classify_line(line)
+                if ev_type == "done":
+                    break
+                if ev_type != "data" or not data:
+                    continue
+                for ev in adapter.feed(data):
+                    if ev.kind == "image_progress":
+                        if progress_cb is not None:
+                            try:
+                                await progress_cb(_clamp_progress(int(ev.content or "0")))
+                            except ValueError:
+                                pass
+                    if ev.kind == "image" and ev.content:
+                        if progress_cb is not None:
+                            await progress_cb(100)
+                        image = await _resolve_image_output(
+                            token=token,
+                            url=ev.content,
+                            response_format=response_format,
+                        )
+                        success = True
+                        return image
+            raise UpstreamError("Image generation returned no images")
+        except UpstreamError as exc:
+            fail_exc = exc
+            if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                retry = True
+                logger.warning(
+                    "lite image retry scheduled: attempt={}/{} status={} token={}...",
+                    attempt + 1,
+                    max_retries,
+                    exc.status,
+                    token[:8],
+                )
+            else:
+                raise
+        except BaseException as exc:
+            fail_exc = exc
+            raise
+        finally:
+            await _acct_dir.release(acct)
+            kind = (
+                FeedbackKind.SUCCESS
+                if success
+                else _feedback_kind(fail_exc)
+                if fail_exc
+                else FeedbackKind.SERVER_ERROR
+            )
+            await _acct_dir.feedback(token, kind, int(spec.mode_id))
+            if success:
+                asyncio.create_task(
+                    _quota_sync(token, int(spec.mode_id))
+                ).add_done_callback(_log_task_exception)
+            else:
+                asyncio.create_task(
+                    _fail_sync(token, int(spec.mode_id), fail_exc)
+                ).add_done_callback(_log_task_exception)
+
+        if retry:
+            excluded.append(token)
+            continue
+
+    raise RateLimitError("No available accounts for image generation")
 
 
 async def _run_lite_batch(
@@ -1028,16 +1136,19 @@ async def edit(
 
     token       = acct.token
     response_id = make_response_id()
+    edit_prompt = prompt
 
     try:
-        image_references = await _prepare_edit_references(token, image_inputs)
-        if not image_references:
+        edit_references = await _prepare_edit_references(token, image_inputs)
+        if not edit_references:
             raise UpstreamError("All image uploads failed; cannot proceed with image edit")
+        edit_prompt = _replace_edit_image_placeholders(prompt, edit_references)
+        image_references = [ref.content_url for ref in edit_references]
 
         post = await create_media_post(
             token,
             media_type=IMAGE_POST_MEDIA_TYPE,
-            prompt=prompt,
+            prompt=edit_prompt,
         )
         post_data = post.get("post")
         if not isinstance(post_data, dict):
@@ -1045,6 +1156,9 @@ async def edit(
         parent_post_id = str(post_data.get("id") or "").strip()
         if not parent_post_id:
             raise UpstreamError("Image edit create-post returned no post id")
+        post_prompt = post_data.get("originalPrompt") or post_data.get("prompt")
+        if isinstance(post_prompt, str) and post_prompt.strip():
+            edit_prompt = post_prompt.strip()
     except Exception:
         await _acct_dir.release(acct)
         raise
@@ -1067,7 +1181,7 @@ async def edit(
                 task = asyncio.create_task(
                     _collect_edit_images(
                         token=token,
-                        prompt=prompt,
+                        prompt=edit_prompt,
                         image_references=image_references,
                         parent_post_id=parent_post_id,
                         requested_n=n,
@@ -1086,7 +1200,12 @@ async def edit(
                         chunk = make_thinking_chunk(
                             response_id,
                             model,
-                            _progress_reason("图片", aggregate, completed=completed, total=n),
+                            _progress_reason_delta(
+                                "图片",
+                                aggregate,
+                                completed=completed,
+                                total=n,
+                            ),
                         )
                         yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                 images = await task
@@ -1131,7 +1250,7 @@ async def edit(
 
         images = await _collect_edit_images(
             token=token,
-            prompt=prompt,
+            prompt=edit_prompt,
             image_references=image_references,
             parent_post_id=parent_post_id,
             requested_n=n,

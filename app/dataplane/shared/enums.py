@@ -8,10 +8,11 @@ from enum import IntEnum
 
 
 class ModeId(IntEnum):
-    AUTO   = 0
-    FAST   = 1
+    AUTO = 0
+    FAST = 1
     EXPERT = 2
-    HEAVY  = 3
+    HEAVY = 3
+    GROK_4_3 = 4
 
 
 class PoolId(IntEnum):
@@ -21,11 +22,11 @@ class PoolId(IntEnum):
 
 
 class StatusId(IntEnum):
-    ACTIVE   = 0
-    COOLING  = 1
-    EXPIRED  = 2
+    ACTIVE = 0
+    COOLING = 1
+    EXPIRED = 2
     DISABLED = 3
-    DELETED  = 4
+    DELETED = 4
 
 
 # Map pool string → PoolId integer (used during sync from control plane).
@@ -35,10 +36,12 @@ POOL_STR_TO_ID: dict[str, int] = {
     "heavy": int(PoolId.HEAVY),
 }
 
+POOL_ID_TO_STR: dict[int, str] = {v: k for k, v in POOL_STR_TO_ID.items()}
+
 STATUS_STR_TO_ID: dict[str, int] = {
-    "active":   int(StatusId.ACTIVE),
-    "cooling":  int(StatusId.COOLING),
-    "expired":  int(StatusId.EXPIRED),
+    "active": int(StatusId.ACTIVE),
+    "cooling": int(StatusId.COOLING),
+    "expired": int(StatusId.EXPIRED),
     "disabled": int(StatusId.DISABLED),
 }
 
@@ -47,9 +50,15 @@ ALL_MODE_IDS: tuple[int, ...] = (
     int(ModeId.FAST),
     int(ModeId.EXPERT),
     int(ModeId.HEAVY),
+    int(ModeId.GROK_4_3),
 )
 
 __all__ = [
-    "ModeId", "PoolId", "StatusId",
-    "POOL_STR_TO_ID", "STATUS_STR_TO_ID", "ALL_MODE_IDS",
+    "ModeId",
+    "PoolId",
+    "StatusId",
+    "POOL_STR_TO_ID",
+    "POOL_ID_TO_STR",
+    "STATUS_STR_TO_ID",
+    "ALL_MODE_IDS",
 ]

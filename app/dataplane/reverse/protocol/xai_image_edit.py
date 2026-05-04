@@ -28,7 +28,6 @@ def build_image_edit_payload(
         "enableImageStreaming": True,
         "imageGenerationCount": IMAGE_EDIT_GENERATION_COUNT,
         "forceConcise": False,
-        "toolOverrides": {"imageGen": True},
         "enableSideBySide": True,
         "sendFinalMetadata": True,
         "isReasoning": False,

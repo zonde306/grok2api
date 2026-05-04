@@ -7,8 +7,23 @@ give feedback, and return results to the caller.
 import asyncio
 from typing import Any, AsyncGenerator, Dict, Optional
 
-from app.platform.logging.logger import logger
+from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
+from app.dataplane.proxy import get_proxy_runtime
+from app.dataplane.reverse.protocol.xai_assets import (
+    ASSETS_LIST_URL,
+    asset_delete_url,
+    infer_content_type,
+    resolve_download_url,
+)
+from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
+from app.dataplane.reverse.transport.http import (
+    delete_json,
+    get_bytes_stream,
+    get_json,
+)
 from app.platform.config.snapshot import get_config
+from app.platform.errors import UpstreamError
+from app.platform.logging.logger import logger
 
 # Global semaphores — limit concurrent transport calls across all callers.
 # Lazily initialised so the event loop is guaranteed to be running on first use.
@@ -28,21 +43,6 @@ def _get_delete_sem() -> asyncio.Semaphore:
         n = max(1, int(get_config("batch.asset_delete_concurrency", 50)))
         _delete_sem = asyncio.Semaphore(n)
     return _delete_sem
-from app.platform.errors import UpstreamError
-from app.control.proxy.models import ProxyFeedback, ProxyFeedbackKind, ProxyScope, RequestKind
-from app.dataplane.reverse.transport._proxy_feedback import upstream_feedback
-from app.dataplane.proxy import get_proxy_runtime
-from app.dataplane.reverse.protocol.xai_assets import (
-    ASSETS_LIST_URL,
-    asset_delete_url,
-    infer_content_type,
-    resolve_download_url,
-)
-from app.dataplane.reverse.transport.http import (
-    delete_json,
-    get_bytes_stream,
-    get_json,
-)
 
 
 # ------------------------------------------------------------------
@@ -174,16 +174,24 @@ async def download_asset(
     url, origin, referer = resolve_download_url(file_path)
     content_type = infer_content_type(url)
 
+    if content_type and content_type.startswith("video/"):
+        accept = "video/mp4,video/*,*/*;q=0.8"
+    elif content_type and content_type.startswith("image/"):
+        accept = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+    else:
+        accept = "*/*"
+
     extra: Dict[str, str] = {
+        "Accept":                   accept,
         "Cache-Control":            "no-cache",
         "Pragma":                   "no-cache",
         "Priority":                 "u=0, i",
+        "Sec-Fetch-Dest":           "document",
         "Sec-Fetch-Mode":           "navigate",
+        "Sec-Fetch-Site":           "none",
         "Sec-Fetch-User":           "?1",
         "Upgrade-Insecure-Requests": "1",
     }
-    if content_type:
-        extra["Content-Type"] = content_type
 
     proxy = await get_proxy_runtime()
     lease = await proxy.acquire(scope=ProxyScope.ASSET, kind=RequestKind.HTTP)

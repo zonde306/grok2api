@@ -172,10 +172,11 @@ async def _dispatch_async(
 # ---------------------------------------------------------------------------
 
 async def _nsfw_one(repo: "AccountRepository", token: str, enabled: bool) -> dict:
-    from app.dataplane.reverse.protocol.xai_auth import set_birth_date, set_nsfw
+    from app.dataplane.reverse.protocol.xai_auth import nsfw_sequence, set_nsfw
     if enabled:
-        await set_birth_date(token)
-    await set_nsfw(token, enabled)
+        await nsfw_sequence(token)
+    else:
+        await set_nsfw(token, enabled)
     patch = AccountPatch(token=token, add_tags=["nsfw"]) if enabled else AccountPatch(token=token, remove_tags=["nsfw"])
     await repo.patch_accounts([patch])
     return {"success": True, "tagged": enabled}

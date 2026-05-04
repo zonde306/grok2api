@@ -1,13 +1,20 @@
 """Local media cache management — stats, list, clear, delete."""
 
+import asyncio
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from app.platform.config.snapshot import get_config
 from app.platform.errors import AppError, ErrorKind
-from app.platform.storage import image_files_dir, video_files_dir
+from app.platform.storage import (
+    clear_local_media_files,
+    delete_local_media_file,
+    image_files_dir,
+    video_files_dir,
+)
 
 router = APIRouter(prefix="/cache", tags=["Admin - Cache"])
 
@@ -40,14 +47,33 @@ def _exts(media_type: str):
     return _IMAGE_EXTS if media_type == "image" else _VIDEO_EXTS
 
 
+def _limit_mb(media_type: str) -> int:
+    cfg = get_config()
+    return max(0, int(cfg.get_int(f"cache.local.{media_type}_max_mb", 0)))
+
+
 def _stats(media_type: str) -> dict[str, Any]:
     d = _dir(media_type)
-    if not d.exists():
-        return {"count": 0, "size_mb": 0.0}
-    allowed = _exts(media_type)
-    files = [f for f in d.glob("*") if f.is_file() and f.suffix.lower() in allowed]
+    files = []
+    if d.exists():
+        allowed = _exts(media_type)
+        files = [f for f in d.glob("*") if f.is_file() and f.suffix.lower() in allowed]
+
     total_size = sum(f.stat().st_size for f in files)
-    return {"count": len(files), "size_mb": round(total_size / 1024 / 1024, 2)}
+    limit_mb = _limit_mb(media_type)
+    limit_bytes = limit_mb * 1024 * 1024
+    usage_ratio = (total_size / limit_bytes) if limit_bytes > 0 else None
+    usage_percent = round(usage_ratio * 100, 1) if usage_ratio is not None else None
+    return {
+        "count": len(files),
+        "size_mb": round(total_size / 1024 / 1024, 2),
+        "size_bytes": total_size,
+        "limit_mb": limit_mb,
+        "limit_bytes": limit_bytes,
+        "limited": limit_bytes > 0,
+        "usage_ratio": round(usage_ratio, 4) if usage_ratio is not None else None,
+        "usage_percent": usage_percent,
+    }
 
 
 def _list_files(media_type: str, page: int, page_size: int) -> dict[str, Any]:
@@ -99,13 +125,7 @@ async def list_local(
 
 @router.post("/clear")
 async def clear_local(req: ClearCacheRequest):
-    d = _dir(req.type)
-    allowed = _exts(req.type)
-    removed = 0
-    for f in d.glob("*"):
-        if f.is_file() and f.suffix.lower() in allowed:
-            f.unlink(missing_ok=True)
-            removed += 1
+    removed = await asyncio.to_thread(clear_local_media_files, req.type)
     return {"status": "success", "result": {"removed": removed}}
 
 
@@ -118,15 +138,22 @@ async def delete_local_item(req: DeleteCacheItemRequest):
             code="missing_file_name",
             status=400,
         )
-    target = _dir(req.type) / req.name
-    if not target.is_file():
+    try:
+        deleted = await asyncio.to_thread(delete_local_media_file, req.type, req.name)
+    except ValueError as exc:
+        raise AppError(
+            str(exc),
+            kind=ErrorKind.VALIDATION,
+            code="invalid_file_name",
+            status=400,
+        ) from exc
+    if not deleted:
         raise AppError(
             "File not found",
             kind=ErrorKind.VALIDATION,
             code="file_not_found",
             status=404,
         )
-    target.unlink(missing_ok=True)
     return {"status": "success", "result": {"deleted": req.name}}
 
 
@@ -141,14 +168,16 @@ async def delete_local_items(req: DeleteCacheItemsRequest):
             status=400,
         )
 
-    cache_dir = _dir(req.type)
     deleted = 0
     missing = 0
 
     for name in names:
-        target = cache_dir / name
-        if target.is_file():
-            target.unlink(missing_ok=True)
+        try:
+            removed = await asyncio.to_thread(delete_local_media_file, req.type, name)
+        except ValueError:
+            missing += 1
+            continue
+        if removed:
             deleted += 1
         else:
             missing += 1

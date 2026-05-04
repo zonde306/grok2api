@@ -20,6 +20,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +30,7 @@ from app.platform.config.snapshot import config as _config
 from app.platform.errors import AppError
 from app.platform.meta import get_project_version
 from app.platform.paths import data_path
+from app.platform.storage import reconcile_local_media_cache_async
 
 
 load_dotenv()
@@ -115,7 +117,12 @@ async def lifespan(app: FastAPI):
         create_repository,
         describe_repository_target,
     )
-    from app.control.account.runtime import set_refresh_service
+    from app.control.account.runtime import (
+        reconcile_refresh_runtime,
+        set_refresh_scheduler,
+        set_refresh_scheduler_leader,
+        set_refresh_service,
+    )
     from app.control.account.scheduler import get_account_refresh_scheduler
     from app.dataplane.account import get_account_directory
 
@@ -138,6 +145,7 @@ async def lifespan(app: FastAPI):
     )
     # Reload config in case it was just seeded/migrated into the backend.
     await _config.load()
+    await reconcile_local_media_cache_async()
 
     directory = await get_account_directory(repo)
 
@@ -181,7 +189,14 @@ async def lifespan(app: FastAPI):
     # 4. Account refresh scheduler — only the leader worker.
     #    Uses an advisory file lock so exactly one process runs the heavy
     #    upstream quota-fetch loop regardless of worker count.
+    #
+    #    ``account.refresh.enabled`` selects between two independent runtime
+    #    strategies:
+    #      - true  → "quota" selector + scheduler running (default).
+    #      - false → "random" selector + scheduler idle (no upstream probing).
     from app.control.account.refresh import AccountRefreshService
+
+    refresh_enabled = _config.get_bool("account.refresh.enabled", False)
 
     refresh_svc = AccountRefreshService(repo)
     set_refresh_service(refresh_svc)
@@ -189,18 +204,32 @@ async def lifespan(app: FastAPI):
 
     is_leader = _try_acquire_scheduler_lock()
     scheduler = get_account_refresh_scheduler(refresh_svc)
-    if is_leader:
-        scheduler.start()
+    set_refresh_scheduler(scheduler)
+    set_refresh_scheduler_leader(is_leader)
+    app.state.account_refresh_scheduler = scheduler
+    app.state.account_refresh_is_leader = is_leader
+
+    strategy_name = reconcile_refresh_runtime(refresh_enabled)
+    if is_leader and strategy_name == "quota":
         logger.info(
-            "scheduler leader: pid={} active_sync_s={} idle_sync_s={}",
+            "scheduler leader: pid={} strategy=quota active_sync_s={} idle_sync_s={}",
+            os.getpid(),
+            _SYNC_ACTIVE_INTERVAL,
+            _SYNC_IDLE_INTERVAL,
+        )
+    elif is_leader:
+        logger.info(
+            "scheduler leader: pid={} strategy=random (scheduler idle) "
+            "active_sync_s={} idle_sync_s={}",
             os.getpid(),
             _SYNC_ACTIVE_INTERVAL,
             _SYNC_IDLE_INTERVAL,
         )
     else:
         logger.info(
-            "scheduler follower: pid={} active_sync_s={} idle_sync_s={}",
+            "scheduler follower: pid={} strategy={} active_sync_s={} idle_sync_s={}",
             os.getpid(),
+            strategy_name,
             _SYNC_ACTIVE_INTERVAL,
             _SYNC_IDLE_INTERVAL,
         )
@@ -232,6 +261,8 @@ async def lifespan(app: FastAPI):
         proxy_scheduler.stop()
         _release_scheduler_lock()
 
+    set_refresh_scheduler(None)
+    set_refresh_scheduler_leader(False)
     set_refresh_service(None)
     await repo.close()
     logger.info("application shutdown completed")
@@ -312,13 +343,49 @@ def create_app() -> FastAPI:
     # Ensure config is loaded on every request.
     @app.middleware("http")
     async def _ensure_config(request: Request, call_next):
+        from app.control.account.runtime import reconcile_refresh_runtime
+
         await _config.load()
+        reconcile_refresh_runtime()
         return await call_next(request)
 
     # Global exception handler — converts AppError to JSON.
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError):
         return JSONResponse(exc.to_dict(), status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ):
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        loc = tuple(first.get("loc") or ())
+        param_parts = [
+            str(part)
+            for part in loc
+            if str(part) not in {"body", "query", "path", "header", "cookie"}
+        ]
+        param = ".".join(param_parts)
+        message = first.get("msg") or "Request validation failed"
+        logger.warning(
+            "request validation failed: method={} path={} param={} errors={}",
+            request.method,
+            request.url.path,
+            param or "-",
+            errors,
+        )
+        payload = {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": "invalid_value",
+            }
+        }
+        if param:
+            payload["error"]["param"] = param
+        return JSONResponse(payload, status_code=400)
 
     @app.exception_handler(Exception)
     async def _generic_error_handler(request: Request, exc: Exception):

@@ -40,12 +40,37 @@
 
     /* Stats */
     .stat-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:30px }
-    .stat-cell { min-height:88px; padding:14px 16px; border-radius:12px; background:#fff; display:flex; flex-direction:column; gap:12px }
+    .stat-cell { min-height:96px; padding:14px 16px; border-radius:12px; background:#fff; display:flex; flex-direction:column; gap:12px }
     .stat-top  { display:flex; align-items:center; justify-content:space-between; gap:10px }
     .stat-label{ font-size:11px; color:#8a8a8a; letter-spacing:.01em; white-space:nowrap }
     .stat-icon { width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center; color:#a3a3a3; flex:0 0 auto }
     .stat-icon svg { width:14px; height:14px; stroke:currentColor }
     .stat-num  { font-size:22px; font-weight:600; line-height:1; letter-spacing:-.02em; margin-top:auto }
+    .stat-sub {
+      margin-top:-4px;
+      font-size:11px;
+      color:#8a8a8a;
+      font-variant-numeric:tabular-nums;
+      min-height:14px;
+    }
+    .stat-progress {
+      height:5px;
+      margin-top:-2px;
+      border-radius:999px;
+      background:#efefef;
+      overflow:hidden;
+    }
+    .stat-progress-fill {
+      display:block;
+      height:100%;
+      width:0;
+      border-radius:999px;
+      background:#d1d5db;
+      transition:width .2s ease, background-color .2s ease;
+    }
+    .stat-progress-fill.image { background:#2563eb }
+    .stat-progress-fill.video { background:#7c3aed }
+    .stat-progress-fill.over { background:#dc2626 }
 
     /* Section tabs */
     .sec-tabs {
@@ -262,7 +287,7 @@
   <div class="page-hd">
     <div>
       <div class="page-title" data-i18n="cache.pageHeading">缓存管理</div>
-      <div class="page-sub" data-i18n="cache.pageSubtitle">统一查看本地缓存文件与账户在线资产，并支持按类型清理。</div>
+      <div class="page-sub" data-i18n="cache.pageSubtitle">统一查看本地缓存文件、容量上限与账户在线资产。</div>
     </div>
   </div>
 
@@ -283,15 +308,6 @@
     </div>
     <div class="stat-cell">
       <div class="stat-top">
-        <div class="stat-label" data-i18n="cache.statImageSize">图片缓存大小</div>
-        <span class="stat-icon" style="color:#2563eb">
-          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-        </span>
-      </div>
-      <div class="stat-num" id="s-img-size" style="color:#2563eb">—</div>
-    </div>
-    <div class="stat-cell">
-      <div class="stat-top">
         <div class="stat-label" data-i18n="cache.statVideoCount">视频缓存数量</div>
         <span class="stat-icon" style="color:#7c3aed">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
@@ -301,12 +317,29 @@
     </div>
     <div class="stat-cell">
       <div class="stat-top">
+        <div class="stat-label" data-i18n="cache.statImageSize">图片缓存大小</div>
+        <span class="stat-icon" style="color:#2563eb">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </span>
+      </div>
+      <div class="stat-num" id="s-img-size" style="color:#2563eb">—</div>
+      <div class="stat-sub" id="s-img-usage">—</div>
+      <div class="stat-progress" aria-hidden="true">
+        <span class="stat-progress-fill image" id="s-img-progress"></span>
+      </div>
+    </div>
+    <div class="stat-cell">
+      <div class="stat-top">
         <div class="stat-label" data-i18n="cache.statVideoSize">视频缓存大小</div>
         <span class="stat-icon" style="color:#7c3aed">
           <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         </span>
       </div>
       <div class="stat-num" id="s-vid-size" style="color:#7c3aed">—</div>
+      <div class="stat-sub" id="s-vid-usage">—</div>
+      <div class="stat-progress" aria-hidden="true">
+        <span class="stat-progress-fill video" id="s-vid-progress"></span>
+      </div>
     </div>
   </div>
 
@@ -460,6 +493,38 @@ function getTypeNoun(type = _type) {
 function loadSavedPageSize() {
   const raw = Number(localStorage.getItem(PAGE_SIZE_KEY));
   return PAGE_SIZE_OPTIONS.includes(raw) ? raw : 100;
+}
+
+function _fmtRatio(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return tr('cache.na', null, '—');
+  return `${num.toFixed(1)}%`;
+}
+
+function _usageSummary(stats) {
+  const used = _fmtBytes(stats.size_bytes ?? 0);
+  if (!stats?.limited || !stats?.limit_bytes) {
+    return tr('cache.usageSummaryUnlimited', { used }, `${used} · 未限制`);
+  }
+  const limit = _fmtBytes(stats.limit_bytes);
+  const percent = _fmtRatio(stats.usage_percent);
+  return tr(
+    'cache.usageSummaryLimited',
+    { used, limit, percent },
+    `${used} / ${limit} · ${percent}`
+  );
+}
+
+function _applyUsageBar(id, type, stats) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const limited = !!stats?.limited && Number(stats.limit_bytes) > 0;
+  const percent = limited ? Number(stats.usage_percent ?? 0) : 0;
+  const safe = Number.isFinite(percent) ? percent : 0;
+  el.style.width = `${Math.max(0, Math.min(safe, 100))}%`;
+  el.classList.toggle('over', limited && safe > 100);
+  el.classList.toggle('image', type === 'image');
+  el.classList.toggle('video', type === 'video');
 }
 
 function invalidateLocalView() {
@@ -625,8 +690,12 @@ async function loadStats() {
     const vid = d.local_video || {};
     document.getElementById('s-img-count').textContent = img.count ?? 0;
     document.getElementById('s-img-size').textContent = _fmtMb(img.size_mb);
+    document.getElementById('s-img-usage').textContent = _usageSummary(img);
+    _applyUsageBar('s-img-progress', 'image', img);
     document.getElementById('s-vid-count').textContent = vid.count ?? 0;
     document.getElementById('s-vid-size').textContent = _fmtMb(vid.size_mb);
+    document.getElementById('s-vid-usage').textContent = _usageSummary(vid);
+    _applyUsageBar('s-vid-progress', 'video', vid);
   } catch (e) {
     console.warn('stats error', e);
   }

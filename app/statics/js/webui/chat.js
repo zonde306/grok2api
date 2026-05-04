@@ -2,7 +2,7 @@
   const VERIFY_ENDPOINT = '/webui/api/verify';
   const MODELS_ENDPOINT = '/webui/api/models';
   const CHAT_ENDPOINT = '/webui/api/chat/completions';
-  const PREFERRED_MODEL = 'grok-4.20-0309';
+  const PREFERRED_MODEL = 'grok-4.20-0309-non-reasoning';
   const STORE_KEY = 'grok2api_webui_chat_sessions_v1';
   const SIDEBAR_STORE_KEY = 'grok2api_webui_sidebar_collapsed_v1';
 
@@ -316,6 +316,64 @@
     });
   }
 
+  function isNativeGrokMediaUrl(value) {
+    try {
+      const url = new URL(value, window.location.origin);
+      return /(^|\.)grok\.com$/i.test(url.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function showMediaProxyHint(media, type) {
+    if (!media || media.nextElementSibling?.classList?.contains('msg-media-error')) return;
+    const hint = document.createElement('div');
+    hint.className = 'msg-media-error';
+    if (type === 'image') {
+      hint.textContent = text(
+        'webui.chat.errors.imageProxyRequired',
+        'Image failed to load. Set APP Base URL and change image output format to local_url, local_md, or base64.'
+      );
+    } else {
+      hint.textContent = text(
+        'webui.chat.errors.videoProxyRequired',
+        'Video loading returned 403. Go to the admin page, set the APP Base URL, then change the video output format to local proxy mode (local_url or local_html) and retry.'
+      );
+    }
+    media.insertAdjacentElement('afterend', hint);
+  }
+
+  function clearMediaProxyHint(media) {
+    const hint = media && media.nextElementSibling;
+    if (hint?.classList?.contains('msg-media-error')) hint.remove();
+  }
+
+  function enhanceMediaElements(card) {
+    card.querySelectorAll('video').forEach((video) => {
+      if (video.dataset.proxyHintBound === '1') return;
+      video.dataset.proxyHintBound = '1';
+      const onVideoError = () => showMediaProxyHint(video, 'video');
+      video.addEventListener('error', onVideoError);
+      video.querySelectorAll('source').forEach((source) => {
+        source.addEventListener('error', onVideoError);
+      });
+      video.addEventListener('loadedmetadata', () => clearMediaProxyHint(video));
+      if (video.error) showMediaProxyHint(video, 'video');
+    });
+
+    card.querySelectorAll('img').forEach((img) => {
+      if (img.dataset.proxyHintBound === '1') return;
+      img.dataset.proxyHintBound = '1';
+      img.addEventListener('error', () => {
+        if (isNativeGrokMediaUrl(img.currentSrc || img.src)) showMediaProxyHint(img, 'image');
+      });
+      img.addEventListener('load', () => clearMediaProxyHint(img));
+      if (img.complete && img.naturalWidth === 0 && isNativeGrokMediaUrl(img.currentSrc || img.src)) {
+        showMediaProxyHint(img, 'image');
+      }
+    });
+  }
+
   function extractTextContent(content) {
     if (typeof content === 'string') return content;
     if (!Array.isArray(content)) return '';
@@ -461,6 +519,7 @@
           )).join(''));
         }
         card.innerHTML = parts.join('') || '<p></p>';
+        enhanceMediaElements(card);
         return;
       }
 
@@ -501,6 +560,7 @@
 
     if (role === 'assistant') {
       card.innerHTML = renderRichMarkdown(content);
+      enhanceMediaElements(card);
       return;
     }
     card.textContent = content;

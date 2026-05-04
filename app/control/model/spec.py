@@ -22,26 +22,37 @@ class ModelSpec:
                     pools first (hard priority, not soft preference).
     """
 
-    model_name:  str
-    mode_id:     ModeId
-    tier:        Tier
-    capability:  Capability
-    enabled:     bool
+    model_name: str
+    mode_id: ModeId
+    tier: Tier
+    capability: Capability
+    enabled: bool
     public_name: str
     prefer_best: bool = False
 
     # --- convenience predicates ---
 
-    def is_chat(self)       -> bool: return bool(self.capability & Capability.CHAT)
-    def is_image(self)      -> bool: return bool(self.capability & Capability.IMAGE)
-    def is_image_edit(self) -> bool: return bool(self.capability & Capability.IMAGE_EDIT)
-    def is_video(self)      -> bool: return bool(self.capability & Capability.VIDEO)
-    def is_voice(self)      -> bool: return bool(self.capability & Capability.VOICE)
+    def is_chat(self) -> bool:
+        return bool(self.capability & Capability.CHAT)
+
+    def is_image(self) -> bool:
+        return bool(self.capability & Capability.IMAGE)
+
+    def is_image_edit(self) -> bool:
+        return bool(self.capability & Capability.IMAGE_EDIT)
+
+    def is_video(self) -> bool:
+        return bool(self.capability & Capability.VIDEO)
+
+    def is_voice(self) -> bool:
+        return bool(self.capability & Capability.VOICE)
 
     def pool_name(self) -> str:
         """Return the canonical pool string for this tier."""
-        if self.tier == Tier.SUPER:  return "super"
-        if self.tier == Tier.HEAVY:  return "heavy"
+        if self.tier == Tier.SUPER:
+            return "super"
+        if self.tier == Tier.HEAVY:
+            return "heavy"
         return "basic"
 
     def pool_id(self) -> int:
@@ -63,15 +74,21 @@ class ModelSpec:
           HEAVY tier  → heavy only
 
         Reversed (prefer_best=True):
-          non-HEAVY   → try heavy first, then super, then basic
+          BASIC tier  → try heavy first, then super, then basic
+          SUPER tier  → try heavy first, then super
           HEAVY tier  → heavy only
         """
         if self.prefer_best:
-            if self.tier == Tier.HEAVY:  return (2,)       # heavy only
-            return (2, 1, 0)                                # heavy, super, basic
-        if self.tier == Tier.BASIC:  return (0, 1, 2)   # basic, super, heavy
-        if self.tier == Tier.SUPER:  return (1, 2)       # super, heavy
-        return (2,)                                       # heavy only
+            if self.tier == Tier.HEAVY:
+                return (2,)  # heavy only
+            if self.tier == Tier.SUPER:
+                return (2, 1)  # heavy, super
+            return (2, 1, 0)  # heavy, super, basic
+        if self.tier == Tier.BASIC:
+            return (0, 1, 2)  # basic, super, heavy
+        if self.tier == Tier.SUPER:
+            return (1, 2)  # super, heavy
+        return (2,)  # heavy only
 
 
 __all__ = ["ModelSpec"]

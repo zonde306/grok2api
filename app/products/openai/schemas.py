@@ -30,7 +30,6 @@ class ChatCompletionRequest(BaseModel):
     model:               str
     messages:            list[MessageItem]
     stream:              bool | None                = None
-    thinking:            bool | None                = None
     reasoning_effort:    str | None                 = None
     temperature:         float | None               = 0.8
     top_p:               float | None               = 0.95

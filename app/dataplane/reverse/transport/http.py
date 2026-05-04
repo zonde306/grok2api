@@ -248,6 +248,9 @@ async def get_bytes_stream(
     )
     if extra_headers:
         headers.update(extra_headers)
+    if headers.get("Sec-Fetch-Mode") == "navigate":
+        headers.pop("Content-Type", None)
+        headers.pop("Origin", None)
     kwargs = build_session_kwargs(lease=lease)
 
     session = ResettableSession(**kwargs)
@@ -259,7 +262,6 @@ async def get_bytes_stream(
             stream=True,
             allow_redirects=True,
         )
-
         if response.status_code != 200:
             try:
                 body = (response.content).decode("utf-8", "replace")[:400]
